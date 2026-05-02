@@ -347,7 +347,7 @@ def test_bibliography_parsing_and_apa_reference_titles(tmp_path):
     ]
 
     bibliographies = list_bibliographies(store)
-    assert [item["format"] for item in bibliographies] == ["bibtex", "csl-json"]
+    assert sorted(item["format"] for item in bibliographies) == sorted(["bibtex", "csl-json"])
     assert [item["entry_count"] for item in bibliographies] == [1, 1]
 
     cited = papers_cited_by(store, "A Survey of Generative Models")

@@ -419,5 +419,68 @@ def export_cmd(
     click.echo(_dump(manifest))
 
 
+
+@cli.command()
+@click.option("--store", "store_path", default=".litkg_store.ttl", show_default=True)
+@click.option("--host", default="127.0.0.1", show_default=True)
+@click.option("--port", default=8765, show_default=True)
+def serve(store_path: str, host: str, port: int) -> None:
+    """Run the local LitKG web UI."""
+    try:
+        import uvicorn
+    except ImportError as exc:
+        raise click.ClickException("uvicorn is required: pip install -r requirements.txt") from exc
+    from .web import create_app
+
+    app = create_app(store_path)
+    click.echo(f"Serving LitKG UI at http://{host}:{port}")
+    uvicorn.run(app, host=host, port=port)
+
+
+
+@cli.command("papercite-sync")
+@click.argument("paper", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--store", "store_path", default=".litkg_store.ttl", show_default=True)
+@click.option("--output", "output_path", default=".litkg_paper.json", show_default=True)
+def papercite_sync_cmd(paper: Path, store_path: str, output_path: str) -> None:
+    """Sync citation keys from a paper against the LitKG store."""
+    from .papercite import dump, sync
+
+    result = sync(_store(store_path), paper)
+    click.echo(dump(result, output_path))
+    click.echo(f"Wrote {output_path}")
+
+
+@cli.command("papercite-gate")
+@click.argument("paper", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--store", "store_path", default=".litkg_store.ttl", show_default=True)
+@click.option("--allow-partial/--no-allow-partial", default=False, show_default=True)
+def papercite_gate_cmd(paper: Path, store_path: str, allow_partial: bool) -> None:
+    """Fail unless all paper citations resolve cleanly."""
+    from .papercite import gate_result, sync
+
+    result = sync(_store(store_path), paper)
+    ok, message = gate_result(result, allow_partial=allow_partial)
+    if not ok:
+        raise click.ClickException(message)
+    click.echo(message)
+
+
+@cli.command("papercite-export")
+@click.argument("paper", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--store", "store_path", default=".litkg_store.ttl", show_default=True)
+@click.option("--output", "output_dir", default="paper-bundle", show_default=True)
+def papercite_export_cmd(paper: Path, store_path: str, output_dir: str) -> None:
+    """Export paper citation bundle and run the citation gate."""
+    from .papercite import export, gate_result, sync
+
+    store = _store(store_path)
+    result = sync(store, paper)
+    ok, message = gate_result(result)
+    click.echo(message)
+    manifest = export(store, paper, output_dir)
+    click.echo(_dump(manifest))
+
+
 def main() -> None:
     cli()

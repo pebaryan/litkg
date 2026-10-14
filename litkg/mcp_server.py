@@ -251,6 +251,21 @@ if FastMCP is not None:  # pragma: no cover - optional dependency
         return read_pdf_text(file_path, start_page=start_page, end_page=end_page or None)
 
 
+    @mcp.tool()
+    def papercite_sync(paper_path: str) -> str:
+        from .papercite import sync
+
+        return _json(sync(_get_store(), paper_path))
+
+    @mcp.tool()
+    def papercite_gate(paper_path: str, allow_partial: bool = False) -> str:
+        from .papercite import gate_result, sync
+
+        result = sync(_get_store(), paper_path)
+        ok, message = gate_result(result, allow_partial=allow_partial)
+        return _json({"ok": ok, "message": message, **result})
+
+
 def run(transport: str = "stdio", store_path: str = ".litkg_store.ttl", port: int = 8000):
     if FastMCP is None:
         raise RuntimeError("mcp is not installed. Install dependencies to run the MCP server.")

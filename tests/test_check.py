@@ -191,7 +191,7 @@ def test_library_paper_counts_as_evidence(tmp_path, monkeypatch) -> None:
     paper = tmp_path / "p.tex"
     paper.write_text("\\cite{local}\\bibliography{refs}", encoding="utf-8")
     monkeypatch.setattr(
-        "litkg.check._library_index", lambda path: {"title:an unpublished internal study": "urn:paper"}
+        "litkg.check.library_index", lambda path: {"title:an unpublished internal study": "urn:paper"}
     )
     report = check_paper(paper, CheckOptions(online=True, store="store.ttl", workers=1), verifier=Verifier(FakeFetcher(works=[])))
     result = _result(report, "local")

@@ -10,7 +10,7 @@ from pathlib import Path
 from .manuscript import Citation, Manuscript, load_manuscript
 from .ontology import normalize_key
 from .parser import ReferenceInfo, parse_bibliography
-from .verify import Finding, Record, Verifier, is_wellformed_doi, latex_to_text, normalize_doi
+from .verify import Finding, Record, Verification, Verifier, is_wellformed_doi, latex_to_text, normalize_doi
 
 SEVERITIES = ("error", "warning", "note")
 CONFIG_NAMES = (".litkg.json", "litkg.json")
@@ -185,14 +185,14 @@ def load_config(path: str | Path | None) -> dict:
 # --------------------------------------------------------------------------- checks
 
 
-def _identity(entry: ReferenceInfo) -> str:
+def identity(entry: ReferenceInfo) -> str:
     doi = normalize_doi(entry.doi)
     if doi:
         return f"doi:{doi}"
     return f"title:{normalize_key(latex_to_text(entry.title or entry.raw_text))}"
 
 
-def _offline_issues(key: str, entry: ReferenceInfo) -> list[Finding]:
+def offline_issues(entry: ReferenceInfo) -> list[Finding]:
     findings: list[Finding] = []
     if not entry.title:
         findings.append(Finding("error", "missing-title", "entry has no title"))
@@ -207,7 +207,7 @@ def _offline_issues(key: str, entry: ReferenceInfo) -> list[Finding]:
     return findings
 
 
-def _library_index(store_path: str | None) -> dict[str, str]:
+def library_index(store_path: str | None) -> dict[str, str]:
     if not store_path or not Path(store_path).exists():
         return {}
     from .queries import list_papers
@@ -265,7 +265,7 @@ def check_paper(paper: str | Path, options: CheckOptions | None = None, verifier
             Issue("error", "no-bibliography", "no bibliography found; add \\bibliography{...} or pass --bib", path=report.paper)
         )
 
-    library = _library_index(options.store)
+    library = library_index(options.store)
     to_verify: list[ReferenceResult] = []
     for key in keys:
         result = ReferenceResult(key=key, status="unchecked", citations=manuscript.locations(key))
@@ -281,17 +281,17 @@ def check_paper(paper: str | Path, options: CheckOptions | None = None, verifier
             result.issues.append(_anchor(result, Finding("error", "undefined", f"no bibliography entry for '{key}'")))
             continue
         result.definition = found[0]
-        if len({_identity(definition.entry) for definition in found}) > 1:
+        if len({identity(definition.entry) for definition in found}) > 1:
             result.status = "conflict"
             places = ", ".join(sorted({Path(definition.path).name for definition in found}))
             result.issues.append(
                 _anchor(result, Finding("error", "conflict", f"'{key}' is defined differently in {places}"))
             )
             continue
-        for finding in _offline_issues(key, result.definition.entry):
+        for finding in offline_issues(result.definition.entry):
             result.issues.append(_anchor(result, finding))
         entry = result.definition.entry
-        library_match = library.get(_identity(entry)) or library.get(f"title:{normalize_key(latex_to_text(entry.title))}")
+        library_match = library.get(identity(entry)) or library.get(f"title:{normalize_key(latex_to_text(entry.title))}")
         if library_match:
             result.library_paper = library_match
             result.status = "in-library"
@@ -301,9 +301,9 @@ def check_paper(paper: str | Path, options: CheckOptions | None = None, verifier
     by_identity: dict[str, list[str]] = {}
     for result in report.results:
         if result.definition is not None and result.status != "conflict":
-            by_identity.setdefault(_identity(result.definition.entry), []).append(result.key)
-    for identity, same in by_identity.items():
-        if len(same) > 1 and not identity.endswith(":"):
+            by_identity.setdefault(identity(result.definition.entry), []).append(result.key)
+    for work, same in by_identity.items():
+        if len(same) > 1 and not work.endswith(":"):
             for key in same[1:]:
                 repeat = report.results[keys.index(key)]
                 repeat.issues.append(
@@ -328,13 +328,19 @@ def _verify_online(results: list[ReferenceResult], options: CheckOptions, verifi
         if client is not None:
             client.save()
     for result, verification in zip(results, verifications, strict=True):
-        # A paper in the local library is evidence enough when registries have no record of it.
-        keep_library = result.status == "in-library" and verification.status in {"unverified", "skipped"}
-        if not keep_library:
-            result.status = verification.status
+        status, findings = combine_with_library(result.status == "in-library", verification)
+        result.status = status
         result.record = verification.record
         result.candidate = verification.candidate
-        for finding in verification.findings:
-            if keep_library and finding.code in {"no-match", "not-indexed"}:
-                continue
+        for finding in findings:
             result.issues.append(_anchor(result, finding))
+
+
+def combine_with_library(in_library: bool, verification: Verification) -> tuple[str, list[Finding]]:
+    """Merge a registry verdict with library evidence.
+
+    A paper in the local library is evidence enough when registries have no record of it.
+    """
+    if in_library and verification.status in {"unverified", "skipped"}:
+        return "in-library", [f for f in verification.findings if f.code not in {"no-match", "not-indexed"}]
+    return verification.status, list(verification.findings)

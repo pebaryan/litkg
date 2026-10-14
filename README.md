@@ -189,3 +189,20 @@ python -m litkg annotated-bibliography-export refs --output-dir reports --librar
 
 This writes both `reports/annotated-bibliography.html` and `reports/annotated-bibliography.pdf`
 using the same filter and sort options.
+
+### Paper citation check
+
+```bash
+python -m litkg index ./library --store .litkg_store.ttl
+python -m litkg papercite-sync paper.tex --store .litkg_store.ttl
+python -m litkg papercite-gate paper.tex --store .litkg_store.ttl
+```
+
+Cite keys are read from natbib/biblatex commands (`\cite`, `\citep[p.~3]{key}`, `\parencite`,
+`\cites{a}{b}`, `\nocite`, ...) in `.tex` files and from Pandoc citations (`[@key]`, `@key`) in
+`.md`, `.qmd`, and `.rmd` files. Commented-out LaTeX and Markdown code are ignored.
+
+The gate fails when no citations are found (`--allow-empty` to override), when a key is
+unresolved, duplicated, defined differently in several bibliographies, or only partially
+matched (`--allow-partial` to override). It does not yet verify references online; see
+[PRODUCT_PLAN.md](PRODUCT_PLAN.md) for the roadmap.

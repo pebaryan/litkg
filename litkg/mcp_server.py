@@ -258,11 +258,11 @@ if FastMCP is not None:  # pragma: no cover - optional dependency
         return _json(sync(_get_store(), paper_path))
 
     @mcp.tool()
-    def papercite_gate(paper_path: str, allow_partial: bool = False) -> str:
+    def papercite_gate(paper_path: str, allow_partial: bool = False, allow_empty: bool = False) -> str:
         from .papercite import gate_result, sync
 
         result = sync(_get_store(), paper_path)
-        ok, message = gate_result(result, allow_partial=allow_partial)
+        ok, message = gate_result(result, allow_partial=allow_partial, allow_empty=allow_empty)
         return _json({"ok": ok, "message": message, **result})
 
 

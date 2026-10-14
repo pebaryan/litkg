@@ -455,12 +455,13 @@ def papercite_sync_cmd(paper: Path, store_path: str, output_path: str) -> None:
 @click.argument("paper", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--store", "store_path", default=".litkg_store.ttl", show_default=True)
 @click.option("--allow-partial/--no-allow-partial", default=False, show_default=True)
-def papercite_gate_cmd(paper: Path, store_path: str, allow_partial: bool) -> None:
+@click.option("--allow-empty/--no-allow-empty", default=False, show_default=True, help="Pass when the paper has no citations.")
+def papercite_gate_cmd(paper: Path, store_path: str, allow_partial: bool, allow_empty: bool) -> None:
     """Fail unless all paper citations resolve cleanly."""
     from .papercite import gate_result, sync
 
     result = sync(_store(store_path), paper)
-    ok, message = gate_result(result, allow_partial=allow_partial)
+    ok, message = gate_result(result, allow_partial=allow_partial, allow_empty=allow_empty)
     if not ok:
         raise click.ClickException(message)
     click.echo(message)

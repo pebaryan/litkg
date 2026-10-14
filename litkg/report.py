@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from collections import Counter
-from io import BytesIO
-from html import escape
+from collections.abc import Iterable
 from datetime import datetime
+from html import escape
+from io import BytesIO
 from pathlib import Path
-from typing import Iterable
 
 from .queries import annotated_bibliography
 from .store import LitStore

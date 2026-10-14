@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import click
 
-from .indexer import index_directory
-from .parser import read_pdf_text
+from . import __version__
 from .bundle import export_bundle
 from .export import bibliography_graph, citation_graph, export_graph_bundle
+from .indexer import index_directory
+from .parser import read_pdf_text
 from .queries import (
     annotated_bibliography,
-    list_papers,
     list_bibliographies,
+    list_papers,
     list_reading_lists,
     paper_details,
     paper_references,
@@ -23,7 +25,7 @@ from .queries import (
     papers_without_lists,
     search,
 )
-from .report import annotated_bibliography_html, annotated_bibliography_pdf, export_annotated_bibliography_bundle
+from .report import annotated_bibliography_html, annotated_bibliography_pdf
 from .store import LitStore
 
 
@@ -35,9 +37,17 @@ def _dump(rows) -> str:
     return json.dumps(rows, indent=2, ensure_ascii=False, default=str)
 
 
-@click.group()
+@click.group(context_settings={"help_option_names": ["-h", "--help"]})
+@click.version_option(__version__, prog_name="litkg")
 def cli() -> None:
-    """LitKG-RDF command line interface."""
+    """Check that every citation in a paper is real, then explore your library as a graph.
+
+    
+    Quick start:
+      litkg check paper.tex             offline: keys defined, entries well formed
+      litkg check paper.tex --online    verify against Crossref, DataCite, OpenAlex, arXiv
+      litkg fix paper.tex --write       correct entries from verified records
+    """
 
 
 @cli.command()
@@ -422,19 +432,182 @@ def export_cmd(
 
 @cli.command()
 @click.option("--store", "store_path", default=".litkg_store.ttl", show_default=True)
+@click.option("--paper", "paper", default=None, type=click.Path(exists=True, dir_okay=False), help="Paper to show in the citation review queue.")
 @click.option("--host", default="127.0.0.1", show_default=True)
 @click.option("--port", default=8765, show_default=True)
-def serve(store_path: str, host: str, port: int) -> None:
+def serve(store_path: str, paper: str | None, host: str, port: int) -> None:
     """Run the local LitKG web UI."""
     try:
         import uvicorn
     except ImportError as exc:
-        raise click.ClickException("uvicorn is required: pip install -r requirements.txt") from exc
+        raise click.ClickException("the web UI needs extra packages: pip install 'litkg[web]'") from exc
     from .web import create_app
 
-    app = create_app(store_path)
+    app = create_app(store_path, paper=paper)
     click.echo(f"Serving LitKG UI at http://{host}:{port}")
     uvicorn.run(app, host=host, port=port)
+
+
+# --------------------------------------------------------------------------- paper checks
+
+
+def _check_options(
+    paper: Path,
+    config_path: str | None,
+    bibs: tuple[str, ...],
+    online: bool | None,
+    strict: bool | None,
+    ignored: tuple[str, ...],
+    store_path: str | None,
+    mailto: str | None,
+    cache_dir: str | None,
+):
+    from .check import CheckOptions, find_config, load_config
+
+    try:
+        config = load_config(config_path or find_config(paper))
+    except (OSError, ValueError) as exc:
+        raise click.ClickException(f"invalid config: {exc}") from exc
+    return CheckOptions(
+        bibliographies=[*config.get("bib", []), *bibs],
+        online=bool(config.get("online", False) if online is None else online),
+        strict=bool(config.get("strict", False) if strict is None else strict),
+        ignore={**config.get("ignore", {}), **{key: "" for key in ignored}},
+        mailto=mailto or config.get("mailto"),
+        store=store_path or config.get("store"),
+        cache_dir=cache_dir or config.get("cache_dir", ".litkg_cache"),
+    )
+
+
+def _check_common(function):
+    options = [
+        click.option("--bib", "bibs", multiple=True, type=click.Path(exists=True, dir_okay=False), help="Extra bibliography file (repeatable). Bibliographies the paper declares are found automatically."),
+        click.option("--store", "store_path", default=None, help="LitKG store; papers in it count as evidence that a reference exists."),
+        click.option("--config", "config_path", default=None, type=click.Path(exists=True, dir_okay=False), help="JSON config file. Default: .litkg.json next to the paper or in the current directory."),
+        click.option("--mailto", envvar="LITKG_MAILTO", default=None, help="Contact email sent to Crossref/OpenAlex for their polite pool. [env: LITKG_MAILTO]"),
+        click.option("--cache-dir", envvar="LITKG_CACHE_DIR", default=None, help="Where online responses are cached. [default: .litkg_cache]"),
+    ]
+    for option in reversed(options):
+        function = option(function)
+    return function
+
+
+@cli.command()
+@click.argument("paper", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--online/--offline", default=None, help="Verify references against Crossref, DataCite, OpenAlex, and arXiv. [default: offline]")
+@click.option("--strict", is_flag=True, default=None, help="Fail on warnings as well as errors.")
+@click.option("--ignore", "ignored", multiple=True, metavar="KEY", help="Cite key to skip (repeatable).")
+@_check_common
+@click.option("--format", "fmt", type=click.Choice(["text", "json", "sarif", "junit", "github", "markdown"]), default="text", show_default=True)
+@click.option("--output", "-o", "output", default=None, help="Write the report to a file instead of stdout.")
+@click.option("--sarif", "sarif_path", default=None, metavar="PATH", help="Also write a SARIF report (GitHub code scanning).")
+@click.option("--junit", "junit_path", default=None, metavar="PATH", help="Also write a JUnit XML report.")
+@click.option("--json", "json_path", default=None, metavar="PATH", help="Also write a JSON report.")
+@click.option("--markdown", "markdown_path", default=None, metavar="PATH", help="Also write a Markdown summary (e.g. $GITHUB_STEP_SUMMARY).")
+@click.option("--verbose", "-v", is_flag=True, help="Show notes and citations without issues.")
+def check(
+    paper: Path,
+    online: bool | None,
+    strict: bool | None,
+    ignored: tuple[str, ...],
+    bibs: tuple[str, ...],
+    store_path: str | None,
+    config_path: str | None,
+    mailto: str | None,
+    cache_dir: str | None,
+    fmt: str,
+    output: str | None,
+    sarif_path: str | None,
+    junit_path: str | None,
+    json_path: str | None,
+    markdown_path: str | None,
+    verbose: bool,
+) -> None:
+    """Check every citation in PAPER (.tex, .md, .qmd, .rmd).
+
+    Follows \\input/\\include, reads the bibliographies the paper declares, and reports
+    undefined, conflicting, malformed, and (with --online) fabricated or mismatched
+    references. Exits with status 1 when the check fails.
+    """
+    from .check import check_paper
+    from .formats import render, render_text, write_output
+
+    options = _check_options(paper, config_path, bibs, online, strict, ignored, store_path, mailto, cache_dir)
+    report = check_paper(paper, options)
+
+    rendered = render(report, fmt, verbose=verbose)
+    if output:
+        write_output(output, rendered)
+        if fmt != "text":
+            click.echo(render_text(report, verbose=verbose), err=True)
+    else:
+        click.echo(rendered)
+    for path, side_format in ((sarif_path, "sarif"), (junit_path, "junit"), (json_path, "json"), (markdown_path, "markdown")):
+        if path:
+            write_output(path, render(report, side_format))
+    sys.exit(0 if report.passed else 1)
+
+
+@cli.command()
+@click.argument("paper", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--key", "keys", multiple=True, metavar="KEY", help="Only fix this cite key (repeatable).")
+@click.option("--add-doi", is_flag=True, help="Also add DOIs to correct entries that lack one.")
+@click.option("--write", is_flag=True, help="Apply the changes. Without it, only a diff is shown.")
+@_check_common
+def fix(
+    paper: Path,
+    keys: tuple[str, ...],
+    add_doi: bool,
+    write: bool,
+    bibs: tuple[str, ...],
+    store_path: str | None,
+    config_path: str | None,
+    mailto: str | None,
+    cache_dir: str | None,
+) -> None:
+    """Correct BibTeX entries in PAPER's bibliographies from verified records.
+
+    Runs an online check, then edits only the fields that are wrong (title, author,
+    year, doi, eprint). Shows a diff; pass --write to apply it.
+    """
+    from .check import check_paper
+    from .fix import plan_fixes, preview
+    from .fix import write as write_files
+
+    options = _check_options(paper, config_path, bibs, True, None, (), store_path, mailto, cache_dir)
+    report = check_paper(paper, options)
+    plan = plan_fixes(report, list(keys), add_doi=add_doi)
+    for message in plan.skipped:
+        click.echo(click.style("skip ", fg="yellow") + message, err=True)
+    if not plan.fixes:
+        click.echo("Nothing to fix.")
+        return
+    diff, contents = preview(plan)
+    for item in plan.fixes:
+        click.echo(click.style(item.key, bold=True) + f": {item.reason}")
+    click.echo()
+    click.echo(diff, nl=False)
+    if write:
+        written = write_files(contents)
+        click.echo(click.style(f"\nUpdated {len(plan.fixes)} entr{'y' if len(plan.fixes) == 1 else 'ies'} in {', '.join(Path(p).name for p in written)}.", fg="green"))
+    else:
+        click.echo(click.style("\nDry run. Re-run with --write to apply these changes.", dim=True))
+
+
+@cli.command()
+@click.option("--root", default=".", show_default=True, type=click.Path(exists=True, file_okay=False), help="Directory the agent may read and write in.")
+@click.option("--store", "store_path", default=".litkg_store.ttl", show_default=True, help="Store path, relative to --root.")
+@click.option("--transport", type=click.Choice(["stdio", "sse", "streamable-http"]), default="stdio", show_default=True)
+@click.option("--online/--offline", default=False, show_default=True, help="Allow tools to query Crossref, DataCite, OpenAlex, and arXiv.")
+@click.option("--mailto", envvar="LITKG_MAILTO", default=None)
+def mcp(root: str, store_path: str, transport: str, online: bool, mailto: str | None) -> None:
+    """Run the MCP server so AI agents can check and fix citations."""
+    from .mcp_server import run
+
+    try:
+        run(transport=transport, root=root, store_path=store_path, online=online, mailto=mailto)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 
@@ -484,4 +657,8 @@ def papercite_export_cmd(paper: Path, store_path: str, output_dir: str) -> None:
 
 
 def main() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        # Titles can contain any character; never crash on a narrow console encoding.
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     cli()

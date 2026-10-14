@@ -6,9 +6,8 @@ import html
 from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse
 
-from .queries import list_papers, list_bibliographies, list_reading_lists, search
+from .queries import list_bibliographies, list_papers, list_reading_lists, search
 from .store import LitStore
-
 
 CSS = """
 <style>

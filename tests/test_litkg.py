@@ -1,16 +1,16 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
-import json
 
 import litkg.parser as parser
-from litkg.indexer import index_directory
-from litkg.export import bibliography_graph, citation_graph
 from litkg.cli import cli
+from litkg.export import bibliography_graph, citation_graph
+from litkg.indexer import index_directory
 from litkg.queries import (
     annotated_bibliography,
     list_bibliographies,

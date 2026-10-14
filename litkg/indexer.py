@@ -9,8 +9,8 @@ from .triples import (
     bibliography_to_triples,
     build_paper_lookup,
     citation_triples,
-    paper_to_triples,
     paper_reference_to_triples,
+    paper_to_triples,
     reading_list_to_triples,
 )
 

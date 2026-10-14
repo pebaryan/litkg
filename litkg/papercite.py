@@ -1,76 +1,15 @@
-
 from __future__ import annotations
 
 import json
-import re
 from collections import Counter
 from pathlib import Path
 
 from .bundle import export_bundle
+from .citations import find_citations, unique_keys
 from .ontology import normalize_key
 from .queries import annotated_bibliography
 
-
 MARKDOWN_SUFFIXES = {".md", ".markdown", ".qmd", ".rmd", ".pmd"}
-
-# Any LaTeX command whose name contains "cite" (natbib, biblatex, \nocite, ...),
-# except the few that configure citations rather than make them.
-CITE_COMMAND_RE = re.compile(r"\\([A-Za-z]*cite[A-Za-z]*)\*?", re.IGNORECASE)
-NON_CITING_COMMANDS = {"citestyle", "citesetup", "citereset"}
-OPTIONAL_ARG_RE = re.compile(r"\s*(?:\[[^\]]*\]|\([^)]*\))")
-KEY_GROUP_RE = re.compile(r"\s*\{([^}]*)\}")
-LATEX_COMMENT_RE = re.compile(r"(?<!\\)%.*")
-COMMENT_ENV_RE = re.compile(r"\\begin\{comment\}.*?\\end\{comment\}", re.DOTALL)
-
-FENCED_CODE_RE = re.compile(r"^(```|~~~).*?^\1", re.DOTALL | re.MULTILINE)
-INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
-PANDOC_CITE_RE = re.compile(r"(?<![\w@\\])-?@(\{[^}]+\}|[A-Za-z0-9_][\w:.#$%&+?<>~/-]*)")
-
-
-def _add_key(keys: list[str], key: str) -> None:
-    clean = key.strip()
-    if clean and clean != "*" and clean not in keys:
-        keys.append(clean)
-
-
-def _parse_latex_keys(text: str) -> list[str]:
-    text = COMMENT_ENV_RE.sub("", text)
-    text = "\n".join(LATEX_COMMENT_RE.sub("", line) for line in text.splitlines())
-    keys: list[str] = []
-    for match in CITE_COMMAND_RE.finditer(text):
-        name = match.group(1).lower()
-        if name in NON_CITING_COMMANDS:
-            continue
-        # biblatex multicite commands (\cites, \parencites, ...) take several key groups.
-        multi = name.endswith("cites")
-        position = match.end()
-        while True:
-            while (optional := OPTIONAL_ARG_RE.match(text, position)) is not None:
-                position = optional.end()
-            group = KEY_GROUP_RE.match(text, position)
-            if group is None:
-                break
-            for key in group.group(1).split(","):
-                _add_key(keys, key)
-            position = group.end()
-            if not multi:
-                break
-    return keys
-
-
-def _parse_pandoc_keys(text: str) -> list[str]:
-    text = FENCED_CODE_RE.sub("", text)
-    text = INLINE_CODE_RE.sub("", text)
-    keys: list[str] = []
-    for match in PANDOC_CITE_RE.finditer(text):
-        key = match.group(1)
-        if key.startswith("{"):
-            key = key[1:-1]
-        else:
-            # Pandoc keys may contain internal punctuation but never end with it.
-            key = key.rstrip(":.#$%&+?<>~/-")
-        _add_key(keys, key)
-    return keys
 
 
 def parse_cite_keys(text: str, syntax: str = "latex") -> list[str]:
@@ -79,11 +18,7 @@ def parse_cite_keys(text: str, syntax: str = "latex") -> list[str]:
     ``syntax`` is ``"latex"`` (``\\cite``-family commands) or ``"markdown"``
     (Pandoc ``[@key]`` citations).
     """
-    if syntax == "latex":
-        return _parse_latex_keys(text)
-    if syntax == "markdown":
-        return _parse_pandoc_keys(text)
-    raise ValueError(f"unknown citation syntax: {syntax}")
+    return unique_keys(find_citations(text, syntax))
 
 
 def cite_syntax_for(path: str | Path) -> str:

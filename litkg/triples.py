@@ -2,58 +2,64 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from rdflib import Literal, RDF, URIRef
+from rdflib import RDF, Literal, URIRef
 
 from .ontology import (
     Author,
     Bibliography,
-    BibliographyEntry as BibliographyEntryType,
-    bibliographyFormat,
-    bibliography_entry_uri,
-    bibliography_uri,
-    cites,
-    citedBy,
-    citationDoi,
-    citationTitle,
     Paper,
     ReadingList,
-    ReadingListEntry as ReadingListEntryType,
-    ReferenceEntry as ReferenceEntryType,
     Venue,
     abstract,
+    author_uri,
     authoredPaper,
+    bibliography_entry_uri,
+    bibliography_uri,
+    bibliographyFormat,
+    citationDoi,
+    citationTitle,
+    citedBy,
+    cites,
     contentExcerpt,
     doi,
-    entryNote,
-    entryOrder,
     entryAuthors,
     entryKey,
-    entryYear,
-    entryVenue,
+    entryNote,
+    entryOrder,
     entryStatus,
     entryText,
+    entryVenue,
+    entryYear,
     hasAuthor,
     hasEntry,
     hasReference,
     keyword,
     listName,
     name,
+    normalize_key,
     pageCount,
-    partOf,
     paper_uri,
+    partOf,
     publishedIn,
     reading_list_entry_uri,
     reading_list_uri,
+    reference_entry_uri,
     refersTo,
     sourceKind,
     sourcePath,
     targetRef,
     title,
-    year,
-    normalize_key,
-    author_uri,
-    reference_entry_uri,
     venue_uri,
+    year,
+)
+from .ontology import (
+    BibliographyEntry as BibliographyEntryType,
+)
+from .ontology import (
+    ReadingListEntry as ReadingListEntryType,
+)
+from .ontology import (
+    ReferenceEntry as ReferenceEntryType,
 )
 from .parser import BibliographyInfo, PaperInfo, ReadingListEntry, ReadingListInfo, ReferenceInfo
 

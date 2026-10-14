@@ -264,7 +264,7 @@ def render_github(report: CheckReport) -> str:
         lines.append(f"::{commands[issue.severity]} {','.join(properties)}::{_escape_data(issue.message)}")
     counts = report.counts()
     lines.append(
-        f"litkg: {'passed' if report.passed else 'failed'} — {counts['error']} error(s), {counts['warning']} warning(s)"
+        f"litkg: {'passed' if report.passed else 'failed'} - {counts['error']} error(s), {counts['warning']} warning(s)"
     )
     return "\n".join(lines)
 

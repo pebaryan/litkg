@@ -53,34 +53,51 @@ def cli() -> None:
 @cli.command()
 @click.argument("directory", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.option("--store", "store_path", default=".litkg_store.ttl", show_default=True)
-def index(directory: Path, store_path: str) -> None:
-    """Index a directory of PDF papers and reading-list files."""
+@click.option("--no-cache", is_flag=True, help="Re-parse every PDF instead of reusing unchanged results.")
+@click.option("--json", "as_json", is_flag=True, help="Print statistics as JSON.")
+def index(directory: Path, store_path: str, no_cache: bool, as_json: bool) -> None:
+    """Index PDFs, BibTeX/CSL-JSON bibliographies, and reading lists under DIRECTORY."""
+    from dataclasses import asdict
 
-    stats = index_directory(str(directory), _store(store_path))
-    click.echo(_dump(stats.__dict__))
+    stats = index_directory(str(directory), _store(store_path), use_cache=not no_cache)
+    if as_json:
+        click.echo(_dump(asdict(stats)))
+        return
+    reused = f" ({stats.cached} unchanged)" if stats.cached else ""
+    click.echo(
+        f"Indexed {stats.files} file(s) into {store_path}: {stats.papers} paper(s){reused}, "
+        f"{stats.bibliographies} bibliograph{'y' if stats.bibliographies == 1 else 'ies'} "
+        f"({stats.bibliography_entries} entries), {stats.reading_lists} reading list(s)."
+    )
+    for warning in stats.warnings:
+        click.echo(click.style("warning ", fg="yellow") + warning, err=True)
 
 
 @cli.command(name="stats")
 @click.option("--store", "store_path", default=".litkg_store.ttl", show_default=True)
 def stats_cmd(store_path: str) -> None:
+    """Show counts of papers, authors, bibliographies, and citation links."""
     click.echo(_dump(_store(store_path).stats()))
 
 
 @cli.command()
 @click.option("--store", "store_path", default=".litkg_store.ttl", show_default=True)
 def papers(store_path: str) -> None:
+    """List indexed papers."""
     click.echo(_dump(list_papers(_store(store_path))))
 
 
 @cli.command(name="lists")
 @click.option("--store", "store_path", default=".litkg_store.ttl", show_default=True)
 def lists_cmd(store_path: str) -> None:
+    """List indexed reading lists."""
     click.echo(_dump(list_reading_lists(_store(store_path))))
 
 
 @cli.command(name="bibliographies")
 @click.option("--store", "store_path", default=".litkg_store.ttl", show_default=True)
 def bibliographies_cmd(store_path: str) -> None:
+    """List indexed bibliographies."""
     click.echo(_dump(list_bibliographies(_store(store_path))))
 
 
@@ -88,6 +105,7 @@ def bibliographies_cmd(store_path: str) -> None:
 @click.argument("pattern", required=False, default="")
 @click.option("--store", "store_path", default=".litkg_store.ttl", show_default=True)
 def annotated_bibliography_cmd(pattern: str, store_path: str) -> None:
+    """Show bibliography entries with resolution status (JSON)."""
     click.echo(_dump(annotated_bibliography(_store(store_path), pattern)))
 
 
@@ -117,6 +135,7 @@ def annotated_bibliography_html_cmd(
     output: str,
     store_path: str,
 ) -> None:
+    """Write the annotated bibliography as HTML."""
     html = annotated_bibliography_html(
         _store(store_path),
         pattern,
@@ -125,6 +144,7 @@ def annotated_bibliography_html_cmd(
         descending=descending,
     )
     if output:
+        Path(output).parent.mkdir(parents=True, exist_ok=True)
         Path(output).write_text(html, encoding="utf-8")
         click.echo(f"Wrote HTML report to {output}")
         return
@@ -164,6 +184,7 @@ def annotated_bibliography_pdf_cmd(
     library_name: str,
     store_path: str,
 ) -> None:
+    """Write the annotated bibliography as PDF (needs litkg[pdf])."""
     pdf_bytes = annotated_bibliography_pdf(
         _store(store_path),
         pattern,
@@ -172,6 +193,7 @@ def annotated_bibliography_pdf_cmd(
         descending=descending,
         library_name=library_name or None,
     )
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_bytes(pdf_bytes)
     click.echo(f"Wrote PDF report to {output}")
 
@@ -206,6 +228,7 @@ def annotated_bibliography_export_cmd(
     library_name: str,
     store_path: str,
 ) -> None:
+    """Write the annotated bibliography as both HTML and PDF."""
     output_dir.mkdir(parents=True, exist_ok=True)
     html_output = output_dir / f"{prefix}.html"
     pdf_output = output_dir / f"{prefix}.pdf"
@@ -238,6 +261,7 @@ def annotated_bibliography_export_cmd(
 @click.argument("pattern")
 @click.option("--store", "store_path", default=".litkg_store.ttl", show_default=True)
 def search_cmd(pattern: str, store_path: str) -> None:
+    """Search paper titles, abstracts, and keywords."""
     click.echo(_dump(search(_store(store_path), pattern)))
 
 
@@ -245,6 +269,7 @@ def search_cmd(pattern: str, store_path: str) -> None:
 @click.argument("name")
 @click.option("--store", "store_path", default=".litkg_store.ttl", show_default=True)
 def author_cmd(name: str, store_path: str) -> None:
+    """List papers by an author."""
     click.echo(_dump(papers_by_author(_store(store_path), name)))
 
 
@@ -252,6 +277,7 @@ def author_cmd(name: str, store_path: str) -> None:
 @click.argument("list_name")
 @click.option("--store", "store_path", default=".litkg_store.ttl", show_default=True)
 def list_papers_cmd(list_name: str, store_path: str) -> None:
+    """List papers on a reading list."""
     click.echo(_dump(papers_in_list(_store(store_path), list_name)))
 
 
@@ -259,6 +285,7 @@ def list_papers_cmd(list_name: str, store_path: str) -> None:
 @click.argument("pattern")
 @click.option("--store", "store_path", default=".litkg_store.ttl", show_default=True)
 def show(pattern: str, store_path: str) -> None:
+    """Show details for papers whose title matches PATTERN."""
     click.echo(_dump(paper_details(_store(store_path), pattern)))
 
 
@@ -266,6 +293,7 @@ def show(pattern: str, store_path: str) -> None:
 @click.argument("pattern")
 @click.option("--store", "store_path", default=".litkg_store.ttl", show_default=True)
 def references(pattern: str, store_path: str) -> None:
+    """Show references extracted from matching papers."""
     click.echo(_dump(paper_references(_store(store_path), pattern)))
 
 
@@ -273,6 +301,7 @@ def references(pattern: str, store_path: str) -> None:
 @click.argument("pattern")
 @click.option("--store", "store_path", default=".litkg_store.ttl", show_default=True)
 def cited_by_cmd(pattern: str, store_path: str) -> None:
+    """Show indexed papers that cite matching papers."""
     click.echo(_dump(papers_citing(_store(store_path), pattern)))
 
 
@@ -280,6 +309,7 @@ def cited_by_cmd(pattern: str, store_path: str) -> None:
 @click.argument("pattern")
 @click.option("--store", "store_path", default=".litkg_store.ttl", show_default=True)
 def cites_cmd(pattern: str, store_path: str) -> None:
+    """Show indexed papers cited by matching papers."""
     click.echo(_dump(papers_cited_by(_store(store_path), pattern)))
 
 
@@ -288,12 +318,14 @@ def cites_cmd(pattern: str, store_path: str) -> None:
 @click.option("--start-page", default=1, show_default=True, type=int)
 @click.option("--end-page", default=0, show_default=True, type=int)
 def read(file_path: Path, start_page: int, end_page: int) -> None:
+    """Print the text of a PDF."""
     click.echo(read_pdf_text(str(file_path), start_page=start_page, end_page=end_page or None))
 
 
 @cli.command(name="orphan-papers")
 @click.option("--store", "store_path", default=".litkg_store.ttl", show_default=True)
 def orphan_papers_cmd(store_path: str) -> None:
+    """List papers that are not on any reading list."""
     click.echo(_dump(papers_without_lists(_store(store_path))))
 
 
@@ -301,6 +333,7 @@ def orphan_papers_cmd(store_path: str) -> None:
 @click.argument("sparql")
 @click.option("--store", "store_path", default=".litkg_store.ttl", show_default=True)
 def query(sparql: str, store_path: str) -> None:
+    """Run a SPARQL query against the store."""
     click.echo(_dump(_store(store_path).query(sparql)))
 
 
@@ -311,8 +344,10 @@ def query(sparql: str, store_path: str) -> None:
 @click.option("--output", default="", show_default=False, help="Optional file path to write the graph to.")
 @click.option("--store", "store_path", default=".litkg_store.ttl", show_default=True)
 def citation_graph_cmd(root: str, depth: int, fmt: str, output: str, store_path: str) -> None:
+    """Export the citation graph as Mermaid or DOT."""
     graph = citation_graph(_store(store_path), root_paper=root or None, depth=depth, fmt=fmt)
     if output:
+        Path(output).parent.mkdir(parents=True, exist_ok=True)
         Path(output).write_text(graph, encoding="utf-8")
     click.echo(graph)
 
@@ -324,8 +359,10 @@ def citation_graph_cmd(root: str, depth: int, fmt: str, output: str, store_path:
 @click.option("--output", default="", show_default=False, help="Optional file path to write the graph to.")
 @click.option("--store", "store_path", default=".litkg_store.ttl", show_default=True)
 def bibliography_graph_cmd(root: str, depth: int, fmt: str, output: str, store_path: str) -> None:
+    """Export bibliography-to-paper links as Mermaid or DOT."""
     graph = bibliography_graph(_store(store_path), root_bibliography=root or None, depth=depth, fmt=fmt)
     if output:
+        Path(output).parent.mkdir(parents=True, exist_ok=True)
         Path(output).write_text(graph, encoding="utf-8")
     click.echo(graph)
 
@@ -353,6 +390,7 @@ def graph_export_cmd(
     prefix: str,
     store_path: str,
 ) -> None:
+    """Write citation and bibliography graphs to a directory."""
     outputs = export_graph_bundle(
         _store(store_path),
         output_dir=output_dir,
@@ -411,6 +449,7 @@ def export_cmd(
     library_name: str,
     store_path: str,
 ) -> None:
+    """Write graphs, reports, and a manifest to one bundle directory."""
     manifest = export_bundle(
         _store(store_path),
         output_dir=output_dir,
@@ -616,7 +655,7 @@ def mcp(root: str, store_path: str, transport: str, online: bool, mailto: str | 
 @click.option("--store", "store_path", default=".litkg_store.ttl", show_default=True)
 @click.option("--output", "output_path", default=".litkg_paper.json", show_default=True)
 def papercite_sync_cmd(paper: Path, store_path: str, output_path: str) -> None:
-    """Sync citation keys from a paper against the LitKG store."""
+    """Store-based citation sync (prefer `litkg check`)."""
     from .papercite import dump, sync
 
     result = sync(_store(store_path), paper)
@@ -630,7 +669,7 @@ def papercite_sync_cmd(paper: Path, store_path: str, output_path: str) -> None:
 @click.option("--allow-partial/--no-allow-partial", default=False, show_default=True)
 @click.option("--allow-empty/--no-allow-empty", default=False, show_default=True, help="Pass when the paper has no citations.")
 def papercite_gate_cmd(paper: Path, store_path: str, allow_partial: bool, allow_empty: bool) -> None:
-    """Fail unless all paper citations resolve cleanly."""
+    """Store-based citation gate (prefer `litkg check`)."""
     from .papercite import gate_result, sync
 
     result = sync(_store(store_path), paper)
@@ -645,7 +684,7 @@ def papercite_gate_cmd(paper: Path, store_path: str, allow_partial: bool, allow_
 @click.option("--store", "store_path", default=".litkg_store.ttl", show_default=True)
 @click.option("--output", "output_dir", default="paper-bundle", show_default=True)
 def papercite_export_cmd(paper: Path, store_path: str, output_dir: str) -> None:
-    """Export paper citation bundle and run the citation gate."""
+    """Store-based citation gate plus export bundle."""
     from .papercite import export, gate_result, sync
 
     store = _store(store_path)

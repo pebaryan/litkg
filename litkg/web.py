@@ -1,192 +1,335 @@
-
 from __future__ import annotations
 
 import html
+from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse
 
-from .queries import list_bibliographies, list_papers, list_reading_lists, search
+from .queries import (
+    list_bibliographies,
+    list_papers,
+    list_reading_lists,
+    paper_details,
+    paper_references,
+    papers_citing,
+    search,
+)
 from .store import LitStore
 
 CSS = """
 <style>
 :root{
-  --bg:#0b1020; --card:#141b2d; --muted:#98a2b3; --text:#ecf0f7;
-  --accent:#7c8cf8; --accent2:#6dd3ff; --border:#24304f; --ok:#4ade80;
+  --bg:#f7f8fb; --card:#ffffff; --muted:#5b6474; --text:#151a24; --border:#dde2ec;
+  --accent:#3b4fd8; --chip:#eef1fd; --head:#f1f3f9;
+  --ok:#137a3a; --ok-bg:#e3f5ea; --warn:#8a5a00; --warn-bg:#fdf1d6; --bad:#b4232a; --bad-bg:#fbe4e5;
+  --note:#3d5a80; --note-bg:#e6eef8;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0e1320; --card:#161d2e; --muted:#9aa4b6; --text:#e8ecf4; --border:#27314a;
+    --accent:#8c9cff; --chip:#1f2942; --head:#1a2236;
+    --ok:#6ee59a; --ok-bg:#163526; --warn:#f3c66b; --warn-bg:#3a2f14; --bad:#ff8a8f; --bad-bg:#3d1c20;
+    --note:#9cc0ff; --note-bg:#1b2a44;
+  }
 }
 *{box-sizing:border-box}
-body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:radial-gradient(circle at 20% 0%,#1a2440,#0b1020 40%);color:var(--text);min-height:100vh}
-a{color:var(--accent2);text-decoration:none}
-a:hover{text-decoration:underline}
-nav{padding:1rem 2rem;border-bottom:1px solid var(--border);backdrop-filter:blur(8px);position:sticky;top:0;background:rgba(11,16,32,.8)}
-nav .wrap{max-width:1200px;margin:0 auto;display:flex;gap:1.5rem;align-items:center}
-nav .brand{font-weight:700;letter-spacing:.5px}
+body{margin:0;font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text)}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+a:focus-visible,button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+nav{border-bottom:1px solid var(--border);background:var(--card)}
+nav .wrap{max-width:1180px;margin:0 auto;padding:.8rem 1rem;display:flex;gap:1.4rem;align-items:center;flex-wrap:wrap}
+nav .brand{font-weight:700}
 nav .links{display:flex;gap:1rem;flex-wrap:wrap}
-.hero{padding:4rem 2rem 2rem;max-width:1200px;margin:0 auto}
-.hero h1{font-size:2.6rem;margin:0 0 1rem;background:linear-gradient(90deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;color:transparent}
-.hero p{color:var(--muted);max-width:720px;font-size:1.1rem;line-height:1.6}
-.container{max-width:1200px;margin:0 auto;padding:0 2rem 3rem}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1rem;margin:2rem 0}
-.card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:1.4rem 1.2rem;box-shadow:0 8px 24px rgba(0,0,0,.25)}
-.card h3{margin:.2rem 0 .6rem;font-size:.85rem;text-transform:uppercase;color:var(--muted);letter-spacing:.08em}
-.card .num{font-size:2rem;font-weight:700}
-.table-wrap{background:var(--card);border:1px solid var(--border);border-radius:16px;overflow:auto;box-shadow:0 8px 24px rgba(0,0,0,.25)}
+nav a[aria-current=page]{font-weight:600;text-decoration:underline}
+main{max-width:1180px;margin:0 auto;padding:1.5rem 1rem 3rem}
+h1{font-size:1.5rem;margin:0 0 .25rem} .sub{color:var(--muted);margin:0 0 1.25rem}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.75rem;margin:1rem 0 1.5rem}
+.card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:1rem}
+.card h2{margin:0 0 .3rem;font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:600}
+.num{font-size:1.7rem;font-weight:700}
+.table-wrap{background:var(--card);border:1px solid var(--border);border-radius:10px;overflow-x:auto}
 table{width:100%;border-collapse:collapse}
-th,td{padding:.8rem 1rem;text-align:left;border-bottom:1px solid var(--border);vertical-align:top}
-th{background:rgba(124,140,248,.08);color:var(--muted);font-size:.75rem;text-transform:uppercase;letter-spacing:.08em}
-tr:hover td{background:rgba(109,211,255,.04)}
-.badge{display:inline-block;padding:.2rem .6rem;border-radius:999px;background:rgba(74,222,128,.15);color:var(--ok);font-size:.75rem;font-weight:600}
-input,textarea{width:100%;padding:.75rem 1rem;border-radius:10px;border:1px solid var(--border);background:#0f162a;color:var(--text);font-family:inherit}
-button{padding:.7rem 1.2rem;border-radius:10px;border:none;background:linear-gradient(90deg,var(--accent),var(--accent2));color:#0b1020;font-weight:700;cursor:pointer}
-.chips{display:flex;flex-wrap:wrap;gap:.4rem}
-.chip{background:rgba(124,140,248,.12);color:var(--accent2);padding:.15rem .5rem;border-radius:999px;font-size:.75rem}
-footer{padding:2rem;text-align:center;color:var(--muted);font-size:.85rem}
+th,td{padding:.6rem .8rem;text-align:left;border-bottom:1px solid var(--border);vertical-align:top}
+th{background:var(--head);color:var(--muted);font-size:.75rem;text-transform:uppercase;letter-spacing:.06em}
+tr:last-child td{border-bottom:none}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.88em}
+form.bar{display:flex;gap:.5rem;margin-bottom:1rem;flex-wrap:wrap}
+input,textarea{flex:1;min-width:12rem;padding:.6rem .8rem;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);font:inherit}
+textarea{width:100%;font-family:ui-monospace,Menlo,Consolas,monospace}
+button,.button{padding:.6rem 1rem;border-radius:8px;border:1px solid var(--accent);background:var(--accent);color:#fff;font-weight:600;cursor:pointer;display:inline-block}
+.button.secondary{background:transparent;color:var(--accent)}
+.chips{display:flex;flex-wrap:wrap;gap:.3rem}
+.chip{background:var(--chip);padding:.05rem .5rem;border-radius:999px;font-size:.8rem}
+.status{display:inline-block;padding:.1rem .55rem;border-radius:999px;font-size:.78rem;font-weight:600;white-space:nowrap}
+.status.ok{background:var(--ok-bg);color:var(--ok)} .status.warning{background:var(--warn-bg);color:var(--warn)}
+.status.error{background:var(--bad-bg);color:var(--bad)} .status.note{background:var(--note-bg);color:var(--note)}
+.issue{margin:.15rem 0} .issue b{font-weight:600}
+.suggest{margin-top:.35rem;color:var(--muted)}
+.empty{padding:2rem;text-align:center;color:var(--muted)}
+.error-text{color:var(--bad)}
+footer{max-width:1180px;margin:0 auto;padding:1rem;color:var(--muted);font-size:.85rem}
 </style>
 """
 
+STAT_LABELS = {
+    "papers": "Papers",
+    "authors": "Authors",
+    "venues": "Venues",
+    "bibliographies": "Bibliographies",
+    "bibliography_entries": "Bibliography entries",
+    "reading_lists": "Reading lists",
+    "reading_list_entries": "Reading-list items",
+    "reference_entries": "Extracted references",
+    "citation_edges": "Citation links",
+    "triples": "RDF triples",
+}
 
-def create_app(store_path: str | None = None) -> FastAPI:
-    app = FastAPI(title="LitKG Web UI")
-    store = LitStore(store_path)
+SEVERITY_WORDS = {"error": "Error", "warning": "Warning", "note": "Note", None: "OK"}
 
-    def page(title: str, body: str, nav: bool = True) -> str:
-        nav_html = (
-            "<nav><div class='wrap'><span class='brand'>LitKG</span>"
-            "<div class='links'><a href='/'>Dashboard</a><a href='/papers'>Papers</a>"
-            "<a href='/bibliographies'>Bibliographies</a><a href='/reading-lists'>Reading lists</a>"
-            "<a href='/search'>Search</a><a href='/query'>SPARQL</a></div></div></nav>"
-        ) if nav else ""
-        return (
-            "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-            f"<title>{html.escape(title)} · LitKG</title>"
-            f"{CSS}</head><body>{nav_html}<main>{body}</main>"
-            "<footer>LitKG · local-first literature knowledge graph</footer></body></html>"
+
+def _e(value) -> str:
+    return html.escape("" if value is None else str(value))
+
+
+def _status_chip(severity: str | None, label: str) -> str:
+    css = severity if severity in {"error", "warning", "note"} else "ok"
+    return f"<span class='status {css}'>{_e(SEVERITY_WORDS.get(severity, ''))}: {_e(label)}</span>"
+
+
+def create_app(store_path: str | None = None, paper: str | None = None) -> FastAPI:
+    app = FastAPI(title="LitKG")
+    state: dict = {"store": None, "mtime": None}
+    resolved_store = LitStore._resolve_path(store_path)
+
+    def store() -> LitStore:
+        """Reload the store whenever the file on disk changes (e.g. after `litkg index`)."""
+        mtime = resolved_store.stat().st_mtime if resolved_store and resolved_store.exists() else None
+        if state["store"] is None or mtime != state["mtime"]:
+            state["store"] = LitStore(store_path)
+            state["mtime"] = mtime
+        return state["store"]
+
+    def page(title: str, body: str, current: str) -> str:
+        links = [("/", "Dashboard"), ("/papers", "Papers"), ("/bibliographies", "Bibliographies"), ("/reading-lists", "Reading lists"), ("/search", "Search"), ("/query", "SPARQL")]
+        if paper:
+            links.insert(1, ("/review", "Citation review"))
+        nav = "".join(
+            f"<a href='{href}'{' aria-current=page' if href == current else ''}>{label}</a>" for href, label in links
         )
+        return (
+            "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            f"<title>{_e(title)} · LitKG</title>{CSS}</head><body>"
+            f"<nav aria-label='Main'><div class='wrap'><span class='brand'>LitKG</span><div class='links'>{nav}</div></div></nav>"
+            f"<main>{body}</main><footer>LitKG runs locally. Nothing leaves this machine unless you run an online check.</footer>"
+            "</body></html>"
+        )
+
+    def table(headers: list[str], rows: list[str], empty: str) -> str:
+        if not rows:
+            return f"<div class='table-wrap'><div class='empty'>{empty}</div></div>"
+        head = "".join(f"<th scope='col'>{_e(header)}</th>" for header in headers)
+        return f"<div class='table-wrap'><table><thead><tr>{head}</tr></thead><tbody>{''.join(rows)}</tbody></table></div>"
+
+    def paper_link(title) -> str:
+        return f"<a href='/paper?title={quote(str(title or ''))}'>{_e(title)}</a>"
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard() -> str:
-        stats = store.stats()
-        body = (
-            "<section class='hero'><h1>Literature, as a graph.</h1>"
-            "<p>Index PDFs, resolve citations, and explore your research library in one offline workspace.</p></section>"
-            "<div class='container'><div class='grid'>"
-            + "".join(
-                f"<div class='card'><h3>{html.escape(str(k).replace('_',' '))}</h3><div class='num'>{html.escape(str(v))}</div></div>"
-                for k, v in stats.items()
-            )
-            + "</div><div class='card'><h3>Quick actions</h3>"
-            "<p><a href='/papers'>Browse papers</a> · <a href='/search'>Search citations</a> · <a href='/query'>Run SPARQL</a></p></div></div>"
+        stats = store().stats()
+        cards = "".join(
+            f"<div class='card'><h2>{_e(label)}</h2><div class='num'>{_e(stats.get(key, 0))}</div></div>"
+            for key, label in STAT_LABELS.items()
         )
-        return page("Dashboard", body)
+        if not stats.get("papers") and not stats.get("bibliographies"):
+            start = (
+                "<div class='card'><h2>Get started</h2><p>Index a folder of PDFs and .bib files:</p>"
+                "<p><code>litkg index ./library</code></p><p>Then check a paper's citations:</p>"
+                "<p><code>litkg check paper.tex --online</code></p></div>"
+            )
+        else:
+            start = "<p><a href='/papers'>Browse papers</a> · <a href='/search'>Search</a> · <a href='/query'>Run SPARQL</a></p>"
+        review = (
+            f"<p><a class='button' href='/review'>Review citations in {_e(Path(paper).name)}</a></p>" if paper else ""
+        )
+        body = f"<h1>Library</h1><p class='sub'>Store: <code>{_e(resolved_store)}</code></p>{review}<div class='grid'>{cards}</div>{start}"
+        return page("Dashboard", body, "/")
+
+    @app.get("/review", response_class=HTMLResponse)
+    def review(online: bool = Query(default=False)) -> str:
+        if not paper:
+            return page("Citation review", "<h1>Citation review</h1><p class='sub'>Start the UI with <code>litkg serve --paper paper.tex</code>.</p>", "/review")
+        from .check import STATUS_LABELS, CheckOptions, check_paper, find_config, load_config
+        from .formats import describe_record, display_path
+
+        config = load_config(find_config(paper))
+        options = CheckOptions(
+            bibliographies=config.get("bib", []),
+            online=online,
+            strict=bool(config.get("strict", False)),
+            ignore=config.get("ignore", {}),
+            mailto=config.get("mailto"),
+            store=str(resolved_store) if resolved_store and resolved_store.exists() else None,
+        )
+        try:
+            report = check_paper(paper, options)
+        except (OSError, ValueError) as exc:
+            return page("Citation review", f"<h1>Citation review</h1><p class='error-text'>{_e(exc)}</p>", "/review")
+
+        order = {"error": 0, "warning": 1, "note": 2, None: 3}
+        rows = []
+        for issue in report.issues:
+            rows.append(
+                f"<tr><td>{_status_chip(issue.severity, issue.code)}</td><td></td><td>{_e(issue.message)}</td>"
+                f"<td class='mono'>{_e(display_path(issue.path))}{':' + str(issue.line) if issue.line else ''}</td></tr>"
+            )
+        for result in sorted(report.results, key=lambda item: order[item.severity]):
+            issues = "".join(
+                f"<div class='issue'><b>{_e(SEVERITY_WORDS[issue.severity])}:</b> {_e(issue.message)}</div>"
+                for issue in result.issues
+            ) or f"<div class='issue'>{_e(STATUS_LABELS.get(result.status, result.status))}</div>"
+            if result.candidate is not None and result.severity in {"error", "warning"}:
+                issues += f"<div class='suggest'>Suggested: {_e(describe_record(result.candidate))}</div>"
+            where = result.citations[0] if result.citations else None
+            rows.append(
+                f"<tr><td>{_status_chip(result.severity, result.status)}</td><td><code>{_e(result.key)}</code></td>"
+                f"<td>{issues}</td><td class='mono'>{_e(display_path(where.path)) + ':' + str(where.line) if where else ''}</td></tr>"
+            )
+        counts = report.counts()
+        verdict = "Passed" if report.passed else "Failed"
+        toggle = (
+            "<a class='button secondary' href='/review'>Re-run offline</a>"
+            if online
+            else "<a class='button' href='/review?online=true'>Verify online</a>"
+        )
+        fixable = [result for result in report.results if result.candidate is not None and result.severity in {"error", "warning"}]
+        fix_hint = (
+            f"<p>Apply the suggested corrections with <code>litkg fix {_e(display_path(paper))} --write</code>.</p>" if fixable else ""
+        )
+        body = (
+            f"<h1>Citation review</h1><p class='sub'><code>{_e(display_path(paper))}</code> · "
+            f"{len(report.manuscript.keys)} cited keys · {'online' if online else 'offline'} check</p>"
+            f"<div class='grid'><div class='card'><h2>Result</h2><div class='num'>{verdict}</div></div>"
+            f"<div class='card'><h2>Errors</h2><div class='num'>{counts['error']}</div></div>"
+            f"<div class='card'><h2>Warnings</h2><div class='num'>{counts['warning']}</div></div></div>"
+            f"<p>{toggle}</p>{fix_hint}"
+            + table(["Status", "Key", "Details", "First cited"], rows, "No citations found.")
+        )
+        return page("Citation review", body, "/review")
 
     @app.get("/papers", response_class=HTMLResponse)
     def papers(q: str = Query(default="")) -> str:
-        rows = list_papers(store)
+        rows = list_papers(store())
         if q:
             needle = q.lower()
             rows = [r for r in rows if needle in str(r.get("title", "")).lower() or needle in ",".join(r.get("authors") or []).lower()]
-        trs = []
-        for row in rows:
-            authors = row.get("authors") or []
-            chips = "".join(f"<span class='chip'>{html.escape(str(a))}</span>" for a in authors)
-            trs.append(
-                "<tr><td>{title}</td><td><div class='chips'>{chips}</div></td><td>{year}</td><td>{pages}</td></tr>".format(
-                    title=html.escape(str(row.get("title", ""))),
-                    chips=chips,
-                    year=html.escape(str(row.get("year", ""))),
-                    pages=html.escape(str(row.get("pages", ""))),
-                )
-            )
+        trs = [
+            f"<tr><td>{paper_link(row.get('title'))}</td><td><div class='chips'>"
+            + "".join(f"<span class='chip'>{_e(author)}</span>" for author in row.get("authors") or [])
+            + f"</div></td><td>{_e(row.get('year'))}</td><td class='mono'>{_e(row.get('doi'))}</td></tr>"
+            for row in rows
+        ]
         body = (
-            "<div class='container'><form method='get' action='/papers' style='margin-bottom:1rem;display:flex;gap:.5rem'>"
-            f"<input name='q' placeholder='Filter papers...' value='{html.escape(q)}'/><button>Filter</button></form>"
-            "<div class='table-wrap'><table><tr><th>Title</th><th>Authors</th><th>Year</th><th>Pages</th></tr>"
-            + "".join(trs)
-            + "</table></div></div>"
+            f"<h1>Papers</h1><p class='sub'>{len(rows)} shown</p>"
+            f"<form class='bar' method='get' action='/papers' role='search'>"
+            f"<input id='q' name='q' aria-label='Filter papers' placeholder='Filter by title or author' value='{_e(q)}'><button>Filter</button></form>"
+            + table(["Title", "Authors", "Year", "DOI"], trs, "No papers yet. Run <code>litkg index ./library</code>.")
         )
-        return page("Papers", body)
+        return page("Papers", body, "/papers")
+
+    @app.get("/paper", response_class=HTMLResponse)
+    def paper_page(title: str = Query(default="")) -> str:
+        rows = [row for row in paper_details(store(), title) if str(row.get("title")) == title] if title else []
+        if not rows:
+            return page("Paper", f"<h1>Paper not found</h1><p class='sub'>{_e(title)}</p>", "/papers")
+        first = rows[0]
+
+        def collect(name: str) -> list[str]:
+            return list(dict.fromkeys(str(row[name]) for row in rows if row.get(name)))
+
+        references = [row for row in paper_references(store(), title) if str(row.get("title")) == title]
+        citing = papers_citing(store(), title)
+        ref_rows = [
+            f"<tr><td>{paper_link(row['refersToTitle']) if row.get('refersToTitle') else _e(row.get('citationTitle') or row.get('citationText'))}</td>"
+            f"<td class='mono'>{_e(row.get('citationDoi'))}</td></tr>"
+            for row in references
+        ]
+        citing_titles = dict.fromkeys(str(row["sourceTitle"]) for row in citing if str(row.get("targetTitle")) == title)
+        citing_rows = [f"<tr><td>{paper_link(source)}</td></tr>" for source in citing_titles]
+        body = (
+            f"<h1>{_e(title)}</h1><p class='sub'>{_e(', '.join(collect('authorName')))}"
+            f"{' · ' + _e(first.get('year')) if first.get('year') else ''}{' · ' + _e(first.get('venueName')) if first.get('venueName') else ''}</p>"
+            f"<p class='mono'>{_e(first.get('path'))}</p>"
+            + (f"<div class='card'><h2>Abstract</h2><p>{_e(first.get('abstract'))}</p></div>" if first.get("abstract") else "")
+            + (f"<p><div class='chips'>{''.join(f'<span class=chip>{_e(k)}</span>' for k in collect('keyword'))}</div></p>" if collect("keyword") else "")
+            + f"<h2>References ({len(ref_rows)})</h2>"
+            + table(["Reference", "DOI"], ref_rows, "No references were extracted from this PDF.")
+            + f"<h2>Cited by ({len(citing_rows)})</h2>"
+            + table(["Paper"], citing_rows, "No indexed paper cites this one.")
+        )
+        return page(title, body, "/papers")
 
     @app.get("/bibliographies", response_class=HTMLResponse)
     def bibliographies() -> str:
-        rows = list_bibliographies(store)
         trs = [
-            "<tr><td>{name}</td><td>{fmt}</td><td>{n}</td></tr>".format(
-                name=html.escape(str(row.get("name", ""))),
-                fmt=html.escape(str(row.get("format", ""))),
-                n=html.escape(str(row.get("entry_count", 0))),
-            )
-            for row in rows
+            f"<tr><td>{_e(row.get('name'))}</td><td>{_e(row.get('format'))}</td><td>{_e(row.get('entry_count', 0))}</td></tr>"
+            for row in list_bibliographies(store())
         ]
-        body = (
-            "<div class='container'><div class='table-wrap'><table><tr><th>Name</th><th>Format</th><th>Entries</th></tr>"
-            + "".join(trs)
-            + "</table></div></div>"
-        )
-        return page("Bibliographies", body)
+        return page("Bibliographies", "<h1>Bibliographies</h1>" + table(["Name", "Format", "Entries"], trs, "No bibliographies indexed."), "/bibliographies")
 
     @app.get("/reading-lists", response_class=HTMLResponse)
     def reading_lists() -> str:
-        rows = list_reading_lists(store)
         trs = [
-            "<tr><td>{name}</td><td>{n}</td></tr>".format(
-                name=html.escape(str(row.get("name", ""))),
-                n=html.escape(str(row.get("entry_count", 0))),
-            )
-            for row in rows
+            f"<tr><td>{_e(row.get('name'))}</td><td>{_e(row.get('entry_count', 0))}</td></tr>"
+            for row in list_reading_lists(store())
         ]
-        body = (
-            "<div class='container'><div class='table-wrap'><table><tr><th>Name</th><th>Entries</th></tr>"
-            + "".join(trs)
-            + "</table></div></div>"
-        )
-        return page("Reading Lists", body)
+        return page("Reading lists", "<h1>Reading lists</h1>" + table(["Name", "Entries"], trs, "No reading lists indexed."), "/reading-lists")
 
     @app.get("/search", response_class=HTMLResponse)
     def search_page(q: str = Query(default="")) -> str:
-        rows = search(store, q) if q else []
-        cards = "".join(
-            "<div class='card' style='margin-bottom:1rem'><div style='font-weight:600'>{t}</div>"
-            "<div style='color:var(--muted);font-size:.9rem'>{r}</div></div>".format(
-                t=html.escape(str(row.get("title", row))),
-                r=html.escape(str(row)),
-            )
-            for row in rows
-        )
+        grouped: dict[str, dict] = {}
+        for row in search(store(), q) if q.strip() else []:
+            item = grouped.setdefault(str(row.get("paper")), {"title": row.get("title"), "year": row.get("year"), "authors": []})
+            if row.get("authorName") and row["authorName"] not in item["authors"]:
+                item["authors"].append(row["authorName"])
+        trs = [
+            f"<tr><td>{paper_link(item['title'])}</td><td>{_e(', '.join(item['authors']))}</td><td>{_e(item['year'])}</td></tr>"
+            for item in grouped.values()
+        ]
+        empty = "No matches." if q.strip() else "Search titles, abstracts, and keywords."
         body = (
-            "<div class='container'><form method='get' action='/search' style='margin-bottom:1rem;display:flex;gap:.5rem'>"
-            f"<input name='q' placeholder='Search papers, refs, authors...' value='{html.escape(q)}'/><button>Search</button></form>"
-            + (cards if rows else "<p style='color:var(--muted)'>No results or enter a query.</p>")
-            + "</div>"
+            "<h1>Search</h1>"
+            f"<form class='bar' method='get' action='/search' role='search'><input name='q' aria-label='Search' placeholder='Search titles, abstracts, keywords' value='{_e(q)}'><button>Search</button></form>"
+            + table(["Title", "Authors", "Year"], trs, empty)
         )
-        return page("Search", body)
+        return page("Search", body, "/search")
 
     @app.get("/query", response_class=HTMLResponse)
     def query_page(q: str = Query(default="")) -> str:
-        rows = []
+        rows: list[dict] = []
         error = ""
         if q.strip():
             try:
-                rows = store.query(q)
-            except Exception as exc:
+                rows = store().query(q)
+            except Exception as exc:  # malformed SPARQL is user input; show the parser message
                 error = str(exc)
-        table = ""
+        result = ""
         if rows:
-            cols = list(rows[0].keys())
-            head = "".join(f"<th>{html.escape(str(c))}</th>" for c in cols)
-            trs = "".join(
-                "<tr>" + "".join(f"<td>{html.escape(str(row.get(c, '')))}</td>" for c in cols) + "</tr>"
-                for row in rows
-            )
-            table = f"<div class='table-wrap'><table><tr>{head}</tr>{trs}</table></div>"
+            cols = list(dict.fromkeys(column for row in rows for column in row))
+            trs = ["<tr>" + "".join(f"<td>{_e(row.get(c, ''))}</td>" for c in cols) + "</tr>" for row in rows]
+            result = table(cols, trs, "")
+        elif q.strip() and not error:
+            result = table([], [], "The query returned no rows.")
+        example = "PREFIX lit: <https://litkg.dev/ontology#>\nSELECT ?title WHERE { ?p a lit:Paper ; lit:title ?title } LIMIT 20"
         body = (
-            "<div class='container'><form method='get' action='/query'>"
-            f"<textarea name='q' rows='6' placeholder='SPARQL query...'>{html.escape(q)}</textarea>"
-            "<div style='margin-top:.5rem'><button>Run</button></div></form>"
-            + (f"<p style='color:#ff6b6b'>{html.escape(error)}</p>" if error else "")
-            + table
-            + "</div>"
+            "<h1>SPARQL</h1><p class='sub'>Read-only queries against the local store.</p>"
+            f"<form method='get' action='/query'><textarea name='q' rows='7' aria-label='SPARQL query' placeholder='{_e(example)}'>{_e(q)}</textarea>"
+            "<p><button>Run query</button></p></form>"
+            + (f"<p class='error-text' role='alert'>{_e(error)}</p>" if error else "")
+            + result
         )
-        return page("SPARQL", body)
+        return page("SPARQL", body, "/query")
 
     return app

@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install -e ".[dev]"
+      - run: ruff check litkg tests
+      - run: pytest -q
+
+  action:
+    # Run the published action against the fixture paper. It must fail on the
+    # fixture's undefined key and pass once that key is ignored.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: expected-failure
+        uses: ./
+        continue-on-error: true
+        with:
+          paper: tests/fixtures/paper/main.tex
+          online: "false"
+      - name: Require the failing run to fail
+        if: steps.expected-failure.outcome != 'failure'
+        run: exit 1
+      - uses: ./
+        with:
+          paper: tests/fixtures/paper/main.tex
+          online: "false"
+          ignore: undefined2024

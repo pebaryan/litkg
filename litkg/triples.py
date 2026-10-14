@@ -126,10 +126,12 @@ def resolve_citation_targets(reference: ReferenceInfo, lookup: dict[str, str]) -
     reference_key = normalize_key(reference.raw_text)
     if not reference_key:
         return targets
+    padded = f" {reference_key} "
     for key, target in lookup.items():
         if key.startswith("doi:"):
             continue
-        if len(key) >= 10 and key in reference_key and target not in targets:
+        # Only long, whole-word titles: short generic ones ("deep learning") match everything.
+        if len(key.split()) >= 4 and len(key) >= 20 and f" {key} " in padded and target not in targets:
             targets.append(target)
     return targets
 

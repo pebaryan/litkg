@@ -159,3 +159,59 @@ def test_http_client_returns_404_and_raises_after_retries(tmp_path, monkeypatch)
 
     with pytest.raises(LookupFailed):
         HttpClient(cache_dir=None, opener=offline, retries=2).get("https://doi.org/10.1/y")
+
+
+def test_failed_candidate_search_keeps_definitive_not_found() -> None:
+    verifier = Verifier(FakeFetcher(fail_hosts={"api.crossref.org", "api.openalex.org"}))
+    verification = verifier.verify(entry(title="Deep Residual Learning for Image Recognition", doi="10.1109/fake.404"))
+    assert verification.status == "not-found"
+    assert verification.candidate is None
+
+
+def test_rate_limiter_adopts_advertised_limits() -> None:
+    from litkg.verify import RateLimiter
+
+    limiter = RateLimiter()
+    limiter.observe("doi.org", {"x-rate-limit-limit": "2", "x-rate-limit-interval": "1s", "x-concurrency-limit": "1"})
+    assert limiter._intervals["crossref"] == 0.5
+    assert limiter.slot("api.crossref.org").limit == 1  # doi.org and Crossref share one budget
+    limiter.penalize("api.crossref.org")
+    assert limiter._intervals["crossref"] == 1.0
+    for _ in range(10):
+        limiter.reward("doi.org")
+    assert limiter._intervals["crossref"] == 0.5
+
+
+def test_exhausted_quota_blocks_registry_without_retrying(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("litkg.verify.time.sleep", lambda seconds: pytest.fail("must not wait out a long Retry-After"))
+    calls = []
+
+    def exhausted(request, timeout):
+        calls.append(request.full_url)
+        raise HTTPError(request.full_url, 429, "quota", {"Retry-After": "47685"}, io.BytesIO(b""))
+
+    client = HttpClient(cache_dir=None, opener=exhausted)
+    with pytest.raises(LookupFailed, match="rate limit exhausted"):
+        client.get("https://api.openalex.org/works?search=a")
+    with pytest.raises(LookupFailed, match="rate limit exhausted"):
+        client.get("https://api.openalex.org/works?search=b")
+    assert len(calls) == 1
+
+
+def test_openalex_outage_does_not_fail_lookup() -> None:
+    verifier = Verifier(FakeFetcher(works=[], fail_hosts={"api.openalex.org"}))
+    verification = verifier.verify(entry(title="An Unknown but Real Technical Report", authors=["Doe, J."], entry_type="article"))
+    assert verification.status == "unverified"
+    assert "OpenAlex was unavailable" in verification.findings[0].message
+    assert verification.findings[0].code == "no-match"
+
+
+def test_cache_keys_exclude_credentials(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LITKG_OPENALEX_API_KEY", "secret-key")
+    client = HttpClient(cache_dir=tmp_path, opener=lambda request, timeout: FakeHandle(200, "{}"))
+    fetcher_url = "https://api.openalex.org/works?search=x&mailto=me%40example.org&api_key=secret-key"
+    client.get(fetcher_url)
+    client.save()
+    stored = (tmp_path / "http.json").read_text(encoding="utf-8")
+    assert "secret-key" not in stored and "example.org" not in stored
+    assert Verifier(FakeFetcher()).openalex_key == "secret-key"

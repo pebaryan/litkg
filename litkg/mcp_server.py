@@ -6,6 +6,7 @@ rejected. Online lookups are disabled unless the server is started with ``--onli
 
 from __future__ import annotations
 
+import functools
 import json
 from dataclasses import asdict
 from pathlib import Path
@@ -34,10 +35,16 @@ from .report import annotated_bibliography_html as render_annotated_bibliography
 from .report import annotated_bibliography_pdf as render_annotated_bibliography_pdf
 from .store import LitStore
 
-try:  # pragma: no cover - optional dependency
-    from mcp.server.fastmcp import FastMCP
-except Exception:  # pragma: no cover - optional dependency
-    FastMCP = None
+try:  # pragma: no cover - optional dependency; mcp 2.x renamed FastMCP to MCPServer
+    from mcp.server.mcpserver import MCPServer as FastMCP
+    from mcp.server.mcpserver.exceptions import ToolError
+except ImportError:  # pragma: no cover
+    try:
+        from mcp.server.fastmcp import FastMCP
+        from mcp.server.fastmcp.exceptions import ToolError
+    except ImportError:
+        FastMCP = None
+        ToolError = RuntimeError
 
 
 def _json(data) -> str:
@@ -349,8 +356,21 @@ def create_server(workspace: Workspace):
         ),
     )
     for name in TOOLS:
-        server.tool(name=name)(getattr(workspace, name))
+        server.tool(name=name)(_reporting_errors(getattr(workspace, name)))
     return server
+
+
+def _reporting_errors(method):
+    """Expose expected failures to the agent as readable tool errors instead of a generic message."""
+
+    @functools.wraps(method)
+    def tool(*args, **kwargs):
+        try:
+            return method(*args, **kwargs)
+        except (WorkspaceError, OSError, ValueError, KeyError) as exc:
+            raise ToolError(str(exc)) from exc
+
+    return tool
 
 
 def run(

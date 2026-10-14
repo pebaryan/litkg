@@ -30,7 +30,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-mcp = ["mcp>=1.2"]
+mcp = ["mcp>=1.2,<3"]
 web = ["fastapi>=0.100", "uvicorn>=0.20"]
 pdf = ["reportlab>=4.0"]
 all = ["litkg[mcp,web,pdf]"]

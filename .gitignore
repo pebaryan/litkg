@@ -10,3 +10,4 @@ build/
 
 .litkg_cache/
 *.egg-info/
+benchmarks/.cache/

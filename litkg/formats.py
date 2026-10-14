@@ -57,6 +57,10 @@ def supports_unicode(stream=None) -> bool:
     return True
 
 
+def plural(count: int, word: str) -> str:
+    return f"{count} {word}{'' if count == 1 else 's'}"
+
+
 def display_path(path: str | None) -> str:
     if not path:
         return ""
@@ -136,12 +140,14 @@ def render_text(report: CheckReport, verbose: bool = False, color: bool | None =
     if report.results or report.issues:
         lines.append("")
     statuses = report.status_counts()
-    if quiet:
-        summary = ", ".join(f"{count} {status}" for status, count in sorted(statuses.items()))
-        lines.append(style(f"{quiet} citation(s) with no issues", dim=True) + (f" ({summary})" if summary else ""))
+    if statuses:
+        separator = " · " if unicode else ", "
+        tally = separator.join(f"{count} {status}" for status, count in sorted(statuses.items(), key=lambda item: (-item[1], item[0])))
+        hidden = f"  ({plural(quiet, 'citation')} without issues hidden; -v shows them)" if quiet else ""
+        lines.append(tally + style(hidden, dim=True))
     counts = report.counts()
     verdict = style("PASSED", fg="green", bold=True) if report.passed else style("FAILED", fg="red", bold=True)
-    lines.append(f"{verdict}  {counts['error']} error(s), {counts['warning']} warning(s), {counts['note']} note(s)")
+    lines.append(f"{verdict}  {plural(counts['error'], 'error')}, {plural(counts['warning'], 'warning')}, {plural(counts['note'], 'note')}")
     if not report.options.online and report.results:
         lines.append(style("Run with --online to verify references against Crossref, DataCite, OpenAlex, and arXiv.", dim=True))
     return "\n".join(lines)
@@ -264,7 +270,7 @@ def render_github(report: CheckReport) -> str:
         lines.append(f"::{commands[issue.severity]} {','.join(properties)}::{_escape_data(issue.message)}")
     counts = report.counts()
     lines.append(
-        f"litkg: {'passed' if report.passed else 'failed'} - {counts['error']} error(s), {counts['warning']} warning(s)"
+        f"litkg: {'passed' if report.passed else 'failed'} - {plural(counts['error'], 'error')}, {plural(counts['warning'], 'warning')}"
     )
     return "\n".join(lines)
 

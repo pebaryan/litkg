@@ -219,3 +219,13 @@ def test_workspace_index_and_query(paper) -> None:
     stats = json.loads(workspace.index_library("."))
     assert stats["bibliographies"] == 1
     assert json.loads(workspace.bibliographies())[0]["entry_count"] == 6
+
+
+def test_tool_errors_carry_the_reason(paper) -> None:
+    from litkg.mcp_server import ToolError, _reporting_errors
+
+    workspace = Workspace(root=paper.parent)
+    tool = _reporting_errors(workspace.read)
+    with pytest.raises(ToolError, match="outside the workspace"):
+        tool("../../elsewhere.pdf")
+    assert tool.__doc__ == workspace.read.__doc__

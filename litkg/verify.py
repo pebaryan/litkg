@@ -7,6 +7,7 @@ fast and deterministic, and each host is rate limited to stay inside its usage p
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
@@ -19,7 +20,7 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Protocol
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import parse_qsl, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from . import __version__
@@ -194,23 +195,107 @@ def arxiv_id_for(entry: ReferenceInfo) -> str | None:
 # --------------------------------------------------------------------------- HTTP
 
 
+class _Gate:
+    """A semaphore whose capacity can change while it is in use."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit = max(1, limit)
+        self._active = 0
+        self._condition = threading.Condition()
+
+    def __enter__(self) -> None:
+        with self._condition:
+            while self._active >= self.limit:
+                self._condition.wait()
+            self._active += 1
+
+    def __exit__(self, *exc) -> None:
+        with self._condition:
+            self._active -= 1
+            self._condition.notify_all()
+
+    def resize(self, limit: int) -> None:
+        with self._condition:
+            self.limit = max(1, limit)
+            self._condition.notify_all()
+
+
 class RateLimiter:
-    INTERVALS = {"export.arxiv.org": 3.0, "api.openalex.org": 0.12, "api.crossref.org": 0.05, "doi.org": 0.05}
+    """Per-registry request spacing and concurrency that stay inside each registry's limits.
+
+    Defaults are conservative; limits a registry advertises in ``x-rate-limit-*`` and
+    ``x-concurrency-limit`` headers (Crossref does) replace them. doi.org content negotiation
+    is answered by Crossref, so both hosts share one budget. A 429 doubles the spacing;
+    successes ease it back toward the advertised rate.
+    """
+
+    BUCKETS = {"doi.org": "crossref", "api.crossref.org": "crossref", "export.arxiv.org": "arxiv", "api.openalex.org": "openalex"}
+    INTERVALS = {"crossref": 0.25, "arxiv": 3.0, "openalex": 0.12}
+    CONCURRENCY = {"crossref": 2, "arxiv": 1, "openalex": 3}
+    MAX_INTERVAL = 10.0
 
     def __init__(self) -> None:
         self._locks: dict[str, threading.Lock] = {}
+        self._gates: dict[str, _Gate] = {}
         self._last: dict[str, float] = {}
+        self._base = dict(self.INTERVALS)
+        self._intervals = dict(self.INTERVALS)
         self._guard = threading.Lock()
 
+    def bucket(self, host: str) -> str:
+        return self.BUCKETS.get(host, host)
+
     def wait(self, host: str) -> None:
+        bucket = self.bucket(host)
         with self._guard:
-            lock = self._locks.setdefault(host, threading.Lock())
+            lock = self._locks.setdefault(bucket, threading.Lock())
         with lock:
-            interval = self.INTERVALS.get(host, 0.1)
-            delay = self._last.get(host, 0.0) + interval - time.monotonic()
+            interval = self._intervals.get(bucket, 0.1)
+            delay = self._last.get(bucket, 0.0) + interval - time.monotonic()
             if delay > 0:
                 time.sleep(delay)
-            self._last[host] = time.monotonic()
+            self._last[bucket] = time.monotonic()
+
+    def slot(self, host: str) -> _Gate:
+        bucket = self.bucket(host)
+        with self._guard:
+            return self._gates.setdefault(bucket, _Gate(self.CONCURRENCY.get(bucket, 4)))
+
+    def observe(self, host: str, headers) -> None:
+        """Adopt the limits a registry advertises, e.g. ``x-rate-limit-limit: 5`` per ``1s``."""
+        if not headers:
+            return
+        bucket = self.bucket(host)
+        limit, window, concurrency = (
+            headers.get("x-rate-limit-limit"),
+            headers.get("x-rate-limit-interval"),
+            headers.get("x-concurrency-limit"),
+        )
+        try:
+            if limit and window:
+                seconds = float(str(window).strip().rstrip("s") or 1)
+                spacing = seconds / max(int(limit), 1)
+                with self._guard:
+                    self._base[bucket] = spacing
+                    self._intervals[bucket] = max(spacing, min(self._intervals.get(bucket, spacing), self.MAX_INTERVAL))
+            if concurrency:
+                self.slot(host).resize(int(concurrency))
+        except ValueError:
+            return
+
+    def penalize(self, host: str) -> None:
+        bucket = self.bucket(host)
+        with self._guard:
+            self._intervals[bucket] = min(max(self._intervals.get(bucket, 0.1), 0.5) * 2, self.MAX_INTERVAL)
+
+    def reward(self, host: str) -> None:
+        """Ease back toward the advertised rate after a successful request."""
+        bucket = self.bucket(host)
+        with self._guard:
+            base = self._base.get(bucket, 0.1)
+            current = self._intervals.get(bucket, base)
+            if current > base:
+                self._intervals[bucket] = max(base, current * 0.8)
 
 
 class HttpClient:
@@ -223,7 +308,7 @@ class HttpClient:
         cache_dir: str | Path | None = ".litkg_cache",
         mailto: str | None = None,
         timeout: float = 20.0,
-        retries: int = 3,
+        retries: int = 5,
         refresh: bool = False,
         opener: Callable = urlopen,
     ) -> None:
@@ -236,6 +321,7 @@ class HttpClient:
         self._limiter = RateLimiter()
         self._lock = threading.Lock()
         self._dirty = False
+        self._blocked: dict[str, float] = {}
         self._cache: dict[str, dict] = {}
         if self.cache_path and self.cache_path.exists():
             try:
@@ -248,8 +334,16 @@ class HttpClient:
         contact = f"; mailto:{self.mailto}" if self.mailto else ""
         return f"litkg/{__version__} (+https://github.com/pebaryan/litkg{contact})"
 
+    SECRET_PARAMS = {"api_key", "mailto"}
+
+    def _cache_key(self, url: str, accept: str) -> str:
+        """Cache by request, never by credential: drop API keys and contact emails from the key."""
+        parsed = urlparse(url)
+        query = [(name, value) for name, value in parse_qsl(parsed.query, keep_blank_values=True) if name not in self.SECRET_PARAMS]
+        return f"{accept} {parsed._replace(query=urlencode(query)).geturl()}"
+
     def get(self, url: str, accept: str = "application/json") -> Response:
-        cache_key = f"{accept} {url}"
+        cache_key = self._cache_key(url, accept)
         with self._lock:
             cached = None if self.refresh else self._cache.get(cache_key)
         if cached is not None:
@@ -261,19 +355,36 @@ class HttpClient:
                 self._dirty = True
         return response
 
+    LONG_WAIT = 60.0  # a Retry-After longer than this means "quota exhausted", not "slow down"
+
     def _fetch(self, url: str, accept: str) -> Response:
         host = urlparse(url).hostname or ""
+        bucket = self._limiter.bucket(host)
+        blocked_until = self._blocked.get(bucket, 0.0)
+        if blocked_until > time.time():
+            raise LookupFailed(f"{host}: rate limit exhausted; retry after {_clock(blocked_until)}")
         last_error = "unknown error"
         for attempt in range(self.retries):
-            self._limiter.wait(host)
             request = Request(url, headers={"Accept": accept, "User-Agent": self.user_agent})
             try:
-                with self._opener(request, timeout=self.timeout) as handle:
-                    return Response(handle.status, handle.read().decode("utf-8", errors="replace"))
+                with self._limiter.slot(host):
+                    self._limiter.wait(host)
+                    with self._opener(request, timeout=self.timeout) as handle:
+                        response = Response(handle.status, handle.read().decode("utf-8", errors="replace"))
+                        self._limiter.observe(host, getattr(handle, "headers", None))
+                self._limiter.reward(host)
+                return response
             except HTTPError as exc:
+                self._limiter.observe(host, exc.headers)
                 if exc.code not in self.RETRY_STATUSES:
                     return Response(exc.code, exc.read().decode("utf-8", errors="replace") if exc.fp else "")
                 last_error = f"HTTP {exc.code}"
+                if exc.code == 429:
+                    self._limiter.penalize(host)
+                    wait = _retry_after(exc.headers.get("Retry-After") if exc.headers else None, attempt, cap=None)
+                    if wait > self.LONG_WAIT:
+                        self._blocked[bucket] = time.time() + wait
+                        raise LookupFailed(f"{host}: rate limit exhausted; retry after {_clock(time.time() + wait)}") from exc
                 delay = _retry_after(exc.headers.get("Retry-After") if exc.headers else None, attempt)
             except (URLError, TimeoutError, OSError) as exc:
                 last_error = str(getattr(exc, "reason", exc))
@@ -293,16 +404,21 @@ class HttpClient:
             self._dirty = False
 
 
-def _retry_after(value: str | None, attempt: int) -> float:
+def _retry_after(value: str | None, attempt: int, cap: float | None = 30.0) -> float:
+    seconds = float(2**attempt)
     if value:
         try:
-            return min(float(value), 30.0)
+            seconds = float(value)
         except ValueError:
             try:
-                return max(0.0, min(parsedate_to_datetime(value).timestamp() - time.time(), 30.0))
+                seconds = max(0.0, parsedate_to_datetime(value).timestamp() - time.time())
             except (TypeError, ValueError):
                 pass
-    return float(2**attempt)
+    return seconds if cap is None else min(seconds, cap)
+
+
+def _clock(timestamp: float) -> str:
+    return time.strftime("%H:%M", time.localtime(timestamp))
 
 
 # --------------------------------------------------------------------------- record parsing
@@ -461,9 +577,12 @@ def _status(findings: list[Finding]) -> str:
 
 
 class Verifier:
-    def __init__(self, fetcher: Fetcher, mailto: str | None = None) -> None:
+    def __init__(self, fetcher: Fetcher, mailto: str | None = None, openalex_key: str | None = None) -> None:
         self.fetcher = fetcher
         self.mailto = mailto
+        self.openalex_key = openalex_key or os.environ.get("LITKG_OPENALEX_API_KEY")
+        self.unavailable: dict[str, str] = {}
+        """Fallback sources that failed during this run, with the reason."""
 
     # -- registries
 
@@ -514,11 +633,17 @@ class Verifier:
         return [record_from_csl(item, "crossref") for item in items if isinstance(item, dict)]
 
     def _openalex(self, entry: ReferenceInfo, rows: int = 5) -> list[Record]:
-        response = self.fetcher.get(
-            "https://api.openalex.org/works?"
-            + urlencode(self._polite({"search": latex_to_text(entry.title), "per-page": rows}))
-        )
+        """OpenAlex is a fallback: when it is unavailable, carry on with what Crossref found."""
+        params = self._polite({"search": latex_to_text(entry.title), "per-page": rows})
+        if self.openalex_key:
+            params["api_key"] = self.openalex_key
+        try:
+            response = self.fetcher.get("https://api.openalex.org/works?" + urlencode(params))
+        except LookupFailed as exc:
+            self.unavailable["OpenAlex"] = str(exc)
+            return []
         if response.status != 200:
+            self.unavailable["OpenAlex"] = f"HTTP {response.status}"
             return []
         try:
             items = json.loads(response.body).get("results", [])
@@ -535,6 +660,19 @@ class Verifier:
         if best is not None:
             return best
         return _best(entry, candidates + self._openalex(entry), exclude_doi)
+
+    def _no_match_message(self) -> str:
+        message = "no matching record in Crossref or OpenAlex; check that this work exists"
+        if "OpenAlex" in self.unavailable:
+            message = "no matching record in Crossref (OpenAlex was unavailable); check that this work exists"
+        return message
+
+    def _try_search(self, entry: ReferenceInfo, exclude_doi: str | None = None) -> Record | None:
+        """Search for a replacement record; failures only cost the suggestion, not the verdict."""
+        try:
+            return self.search(entry, exclude_doi=exclude_doi)
+        except LookupFailed:
+            return None
 
     def suggest(self, entry: ReferenceInfo, limit: int = 5) -> list[tuple[float, Record]]:
         """Rank candidate records from Crossref and OpenAlex by title similarity."""
@@ -562,7 +700,7 @@ class Verifier:
                 return Verification(
                     "not-found",
                     [Finding("error", "doi-not-found", f"DOI {doi} does not exist (doi.org returned 404)")],
-                    candidate=self.search(entry, exclude_doi=doi),
+                    candidate=self._try_search(entry, exclude_doi=doi),
                 )
             return self._judge(entry, record, "the DOI", exclude_doi=doi)
         if arxiv_id:
@@ -571,7 +709,7 @@ class Verifier:
                 return Verification(
                     "not-found",
                     [Finding("error", "arxiv-not-found", f"arXiv:{arxiv_id} does not exist")],
-                    candidate=self.search(entry),
+                    candidate=self._try_search(entry),
                 )
             return self._judge(entry, record, f"arXiv:{arxiv_id}")
         if (entry.entry_type or "").lower() in UNINDEXED_TYPES:
@@ -584,7 +722,7 @@ class Verifier:
         if candidate is None:
             return Verification(
                 "unverified",
-                [Finding("warning", "no-match", "no matching record in Crossref or OpenAlex; check that this work exists")],
+                [Finding("warning", "no-match", self._no_match_message())],
             )
         findings = compare(entry, candidate, f"the closest {candidate.source} match")
         return Verification(_status(findings), findings, record=candidate, candidate=candidate)
@@ -594,7 +732,7 @@ class Verifier:
         status = _status(findings)
         candidate = None
         if status == "mismatch" and any(finding.code == "title-mismatch" for finding in findings):
-            candidate = self.search(entry, exclude_doi=exclude_doi)
+            candidate = self._try_search(entry, exclude_doi=exclude_doi)
         elif any(finding.severity != "note" or finding.code == "missing-doi" for finding in findings):
             candidate = record
         return Verification(status, findings, record=record, candidate=candidate)

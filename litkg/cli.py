@@ -40,14 +40,16 @@ def _dump(rows) -> str:
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(__version__, prog_name="litkg")
 def cli() -> None:
-    """Check that every citation in a paper is real, then explore your library as a graph.
+    """Turn reading lists, PDFs, and bibliographies into a literature map, and verify references.
 
     
     Quick start:
-      litkg check paper.tex             offline: keys defined, entries well formed
-      litkg check paper.tex --online    verify against Crossref, DataCite, OpenAlex, arXiv
-      litkg fix paper.tex --write       correct entries from verified records
+      litkg index ./library             build the knowledge graph
+      litkg papers                      list indexed papers (also: search, cites, cited-by)
+      litkg serve                       browse the library in a local web UI
+      litkg check paper.tex --online    verify a manuscript's references against registries
     """
+
 
 
 @cli.command()

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import hashlib
 from collections import deque
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 from rdflib import RDF, URIRef
 
@@ -12,17 +12,14 @@ from .ontology import (
     BibliographyEntry,
     Paper,
     ReferenceEntry,
-    bibliographyFormat,
-    hasEntry,
     citationTitle,
     entryText,
-    title,
-    bibliography_uri,
-    bibliography_entry_uri,
+    hasEntry,
     hasReference,
+    normalize_key,
     refersTo,
     sourcePath,
-    normalize_key,
+    title,
 )
 from .store import LitStore
 

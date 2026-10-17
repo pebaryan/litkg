@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import re
-
 from rdflib import Literal
 
 from .ontology import ONTOLOGY, normalize_key
@@ -22,11 +20,12 @@ def list_papers(store: LitStore) -> list[dict]:
     rows = store.query(
         PREFIX
         + """
-        SELECT ?paper ?title ?path ?year ?pages ?excerpt ?authorName WHERE {
+        SELECT ?paper ?title ?path ?year ?doi ?pages ?excerpt ?authorName WHERE {
           ?paper a lit:Paper ;
                  lit:title ?title ;
                  lit:sourcePath ?path .
           OPTIONAL { ?paper lit:year ?year . }
+          OPTIONAL { ?paper lit:doi ?doi . }
           OPTIONAL { ?paper lit:pageCount ?pages . }
           OPTIONAL { ?paper lit:contentExcerpt ?excerpt . }
           OPTIONAL { ?paper lit:hasAuthor ?author . ?author lit:name ?authorName . }
@@ -44,6 +43,7 @@ def list_papers(store: LitStore) -> list[dict]:
                 "title": row.get("title"),
                 "path": row.get("path"),
                 "year": row.get("year"),
+                "doi": row.get("doi"),
                 "pages": row.get("pages"),
                 "excerpt": row.get("excerpt"),
                 "authors": [],
@@ -162,7 +162,7 @@ def annotated_bibliography(store: LitStore, pattern: str = "") -> list[dict]:
         grouped.setdefault(row["bibliography"], []).append(row)
 
     results: list[dict] = []
-    for bib_uri, entries in grouped.items():
+    for entries in grouped.values():
         identity_counts: dict[str, int] = {}
         for row in entries:
             identity = _bibliography_entry_identity(row)

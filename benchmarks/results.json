@@ -1,0 +1,67 @@
+{
+  "summary": {
+    "corpus": 40,
+    "cases": 240,
+    "seed": 7,
+    "false_failures_on_real": {
+      "real-doi": 0.0,
+      "real-nodoi": 0.0
+    },
+    "warnings_on_real": {
+      "real-doi": 0.0,
+      "real-nodoi": 0.0
+    },
+    "fabrications_failing_gate": {
+      "fake-doi": 1.0,
+      "swapped-doi": 1.0,
+      "fake-authors": 0.975,
+      "invented": 0.0
+    },
+    "fabrications_flagged": {
+      "fake-doi": 1.0,
+      "swapped-doi": 1.0,
+      "fake-authors": 1.0,
+      "invented": 1.0
+    },
+    "outcomes": {
+      "real-doi": {
+        "ok": 40,
+        "error": 0,
+        "warning": 0
+      },
+      "real-nodoi": {
+        "ok": 40,
+        "error": 0,
+        "warning": 0
+      },
+      "fake-doi": {
+        "error": 40,
+        "warning": 0
+      },
+      "swapped-doi": {
+        "error": 40,
+        "warning": 0
+      },
+      "fake-authors": {
+        "warning": 1,
+        "error": 39
+      },
+      "invented": {
+        "warning": 40,
+        "error": 0
+      }
+    }
+  },
+  "misses": [
+    {
+      "kind": "fake-authors",
+      "corpus_index": 0,
+      "title": "Emotion Processing Deficit in Euthymic Bipolar Disorder: A Potential Endophenotype",
+      "doi": null,
+      "status": "unverified",
+      "findings": [
+        "warning:lookup-failed: lookup failed: api.crossref.org: HTTP 429"
+      ]
+    }
+  ]
+}

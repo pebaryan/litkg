@@ -2,19 +2,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from rdflib import Graph, Literal, RDF
+from rdflib import RDF, Graph, Literal
 
 from .ontology import (
+    ONTOLOGY,
     Author,
     Bibliography,
     BibliographyEntry,
-    cites,
-    ONTOLOGY,
     Paper,
-    ReferenceEntry,
     ReadingList,
     ReadingListEntry,
+    ReferenceEntry,
     Venue,
+    cites,
 )
 
 

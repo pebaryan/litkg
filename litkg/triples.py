@@ -2,58 +2,64 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from rdflib import Literal, RDF, URIRef
+from rdflib import RDF, Literal, URIRef
 
 from .ontology import (
     Author,
     Bibliography,
-    BibliographyEntry as BibliographyEntryType,
-    bibliographyFormat,
-    bibliography_entry_uri,
-    bibliography_uri,
-    cites,
-    citedBy,
-    citationDoi,
-    citationTitle,
     Paper,
     ReadingList,
-    ReadingListEntry as ReadingListEntryType,
-    ReferenceEntry as ReferenceEntryType,
     Venue,
     abstract,
+    author_uri,
     authoredPaper,
+    bibliography_entry_uri,
+    bibliography_uri,
+    bibliographyFormat,
+    citationDoi,
+    citationTitle,
+    citedBy,
+    cites,
     contentExcerpt,
     doi,
-    entryNote,
-    entryOrder,
     entryAuthors,
     entryKey,
-    entryYear,
-    entryVenue,
+    entryNote,
+    entryOrder,
     entryStatus,
     entryText,
+    entryVenue,
+    entryYear,
     hasAuthor,
     hasEntry,
     hasReference,
     keyword,
     listName,
     name,
+    normalize_key,
     pageCount,
-    partOf,
     paper_uri,
+    partOf,
     publishedIn,
     reading_list_entry_uri,
     reading_list_uri,
+    reference_entry_uri,
     refersTo,
     sourceKind,
     sourcePath,
     targetRef,
     title,
-    year,
-    normalize_key,
-    author_uri,
-    reference_entry_uri,
     venue_uri,
+    year,
+)
+from .ontology import (
+    BibliographyEntry as BibliographyEntryType,
+)
+from .ontology import (
+    ReadingListEntry as ReadingListEntryType,
+)
+from .ontology import (
+    ReferenceEntry as ReferenceEntryType,
 )
 from .parser import BibliographyInfo, PaperInfo, ReadingListEntry, ReadingListInfo, ReferenceInfo
 
@@ -120,10 +126,12 @@ def resolve_citation_targets(reference: ReferenceInfo, lookup: dict[str, str]) -
     reference_key = normalize_key(reference.raw_text)
     if not reference_key:
         return targets
+    padded = f" {reference_key} "
     for key, target in lookup.items():
         if key.startswith("doi:"):
             continue
-        if len(key) >= 10 and key in reference_key and target not in targets:
+        # Only long, whole-word titles: short generic ones ("deep learning") match everything.
+        if len(key.split()) >= 4 and len(key) >= 20 and f" {key} " in padded and target not in targets:
             targets.append(target)
     return targets
 

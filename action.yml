@@ -1,0 +1,74 @@
+name: litkg citation check
+description: Fail the build when a paper cites undefined, fabricated, or mismatched references.
+author: pebaryan
+branding:
+  icon: book-open
+  color: blue
+
+inputs:
+  paper:
+    description: Main manuscript (.tex, .md, .qmd, .rmd). Included files and declared bibliographies are found automatically.
+    required: true
+  online:
+    description: Verify references against Crossref, DataCite, OpenAlex, and arXiv.
+    default: "true"
+  strict:
+    description: Fail on warnings as well as errors.
+    default: "false"
+  bib:
+    description: Extra bibliography files, separated by spaces or newlines.
+    default: ""
+  ignore:
+    description: Cite keys to skip, separated by spaces or newlines.
+    default: ""
+  mailto:
+    description: Contact email for the Crossref/OpenAlex polite pool (recommended).
+    default: ""
+  sarif:
+    description: Path of the SARIF report to write (upload it with github/codeql-action/upload-sarif). Empty to skip.
+    default: litkg.sarif
+  python-version:
+    description: Python version used to run litkg.
+    default: "3.12"
+
+outputs:
+  sarif:
+    description: Path of the SARIF report.
+    value: ${{ inputs.sarif }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install litkg
+      shell: bash
+      run: python -m pip install --quiet "${{ github.action_path }}"
+
+    - name: Cache registry responses
+      uses: actions/cache@v4
+      with:
+        path: .litkg_cache
+        key: litkg-${{ runner.os }}-${{ hashFiles('**/*.bib', '**/*.bibtex') }}
+        restore-keys: litkg-${{ runner.os }}-
+
+    - name: Check citations
+      shell: bash
+      env:
+        LITKG_MAILTO: ${{ inputs.mailto }}
+        INPUT_PAPER: ${{ inputs.paper }}
+        INPUT_ONLINE: ${{ inputs.online }}
+        INPUT_STRICT: ${{ inputs.strict }}
+        INPUT_BIB: ${{ inputs.bib }}
+        INPUT_IGNORE: ${{ inputs.ignore }}
+        INPUT_SARIF: ${{ inputs.sarif }}
+      run: |
+        args=("$INPUT_PAPER" --format github --markdown "$GITHUB_STEP_SUMMARY")
+        [ "$INPUT_ONLINE" = "true" ] && args+=(--online)
+        [ "$INPUT_STRICT" = "true" ] && args+=(--strict)
+        [ -n "$INPUT_SARIF" ] && args+=(--sarif "$INPUT_SARIF")
+        for item in $INPUT_BIB; do args+=(--bib "$item"); done
+        for item in $INPUT_IGNORE; do args+=(--ignore "$item"); done
+        litkg check "${args[@]}"

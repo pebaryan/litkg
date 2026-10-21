@@ -4,7 +4,6 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from types import SimpleNamespace
 
 from pypdf import PdfReader
 
@@ -39,7 +38,7 @@ class PaperInfo:
     keywords: list[str] = field(default_factory=list)
     doi: str | None = None
     excerpt: str | None = None
-    references: list["ReferenceInfo"] = field(default_factory=list)
+    references: list[ReferenceInfo] = field(default_factory=list)
     page_count: int = 0
 
 
@@ -52,6 +51,8 @@ class ReferenceInfo:
     year: int | None = None
     venue: str | None = None
     key: str | None = None
+    entry_type: str | None = None
+    fields: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -351,6 +352,12 @@ def _parse_csl_json(path: str, data) -> BibliographyInfo:
                 year=_csl_year(item),
                 venue=venue.strip() if isinstance(venue, str) and venue.strip() else None,
                 key=item.get("id") or item.get("key") or str(idx + 1),
+                entry_type=item.get("type") if isinstance(item.get("type"), str) else None,
+                fields={
+                    name.lower(): str(value)
+                    for name, value in item.items()
+                    if isinstance(value, (str, int, float)) and str(value).strip()
+                },
             )
         )
     return BibliographyInfo(
@@ -404,9 +411,9 @@ def _read_bibtex_value(text: str, start_index: int) -> tuple[str, int]:
             i += 1
         return text[begin:i], i
     begin = i
-    while i < len(text) and text[i] not in ",}":
+    while i < len(text) and text[i] not in ",}#":
         i += 1
-    return text[begin:i], i
+    return text[begin:i].rstrip(), i
 
 
 def _extract_bibtex_field(text: str, field_name: str) -> str | None:
@@ -418,17 +425,46 @@ def _extract_bibtex_field(text: str, field_name: str) -> str | None:
     return cleaned or None
 
 
-def _parse_bibtex(path: str, text: str) -> BibliographyInfo:
-    entries: list[ReferenceInfo] = []
+BIBTEX_FIELD_NAME_RE = re.compile(r"\s*,?\s*([A-Za-z][\w:.+-]*)\s*=\s*")
+BIBTEX_NON_ENTRIES = {"string", "comment", "preamble"}
+
+
+def _bibtex_fields(body: str, macros: dict[str, str]) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    position = 0
+    while (match := BIBTEX_FIELD_NAME_RE.match(body, position)) is not None:
+        parts: list[str] = []
+        position = match.end()
+        while True:
+            raw, position = _read_bibtex_value(body, position)
+            raw = raw.strip()
+            if raw[:1] in {"{", '"'}:
+                parts.append(raw[1:-1])
+            elif raw:
+                parts.append(macros.get(raw.lower(), raw))
+            rest = re.match(r"\s*#\s*", body[position:])
+            if rest is None:
+                break
+            position += rest.end()
+        value = re.sub(r"\s+", " ", "".join(parts)).strip()
+        if value:
+            fields[match.group(1).lower()] = value
+    return fields
+
+
+def _bibtex_blocks(text: str):
     i = 0
     while True:
         at = text.find("@", i)
         if at < 0:
-            break
+            return
         brace = text.find("{", at)
         if brace < 0:
-            break
+            return
         entry_type = text[at + 1 : brace].strip().lower()
+        if not re.fullmatch(r"[a-z]+", entry_type):
+            i = at + 1
+            continue
         depth = 0
         j = brace
         escaped = False
@@ -439,7 +475,7 @@ def _parse_bibtex(path: str, text: str) -> BibliographyInfo:
                 escaped = False
             elif ch == "\\":
                 escaped = True
-            elif ch == '"':
+            elif ch == '"' and entry_type != "comment":
                 in_quotes = not in_quotes
             elif not in_quotes:
                 if ch == "{":
@@ -450,31 +486,51 @@ def _parse_bibtex(path: str, text: str) -> BibliographyInfo:
                         j += 1
                         break
             j += 1
-        block = text[brace + 1 : j - 1].strip()
+        yield entry_type, at, j, text[brace + 1 : j - 1].strip()
         i = j
+
+
+def bibtex_entry_spans(text: str) -> dict[str, tuple[int, int]]:
+    """Map each entry key to the (start, end) offsets of its ``@type{...}`` block."""
+    spans: dict[str, tuple[int, int]] = {}
+    for entry_type, start, end, block in _bibtex_blocks(text):
+        if entry_type in BIBTEX_NON_ENTRIES:
+            continue
+        key = block.partition(",")[0].strip()
+        if key and key not in spans:
+            spans[key] = (start, end)
+    return spans
+
+
+def _parse_bibtex(path: str, text: str) -> BibliographyInfo:
+    entries: list[ReferenceInfo] = []
+    macros: dict[str, str] = {}
+    for entry_type, _start, _end, block in _bibtex_blocks(text):
         if not block:
             continue
+        if entry_type == "string":
+            macros.update({name.lower(): value for name, value in _bibtex_fields(block, macros).items()})
+            continue
+        if entry_type in BIBTEX_NON_ENTRIES:
+            continue
         key, _, body = block.partition(",")
-        raw_text = f"@{entry_type}{{{block}}}"
-        title = _extract_bibtex_field(body, "title")
-        doi = _extract_bibtex_field(body, "doi")
-        author_value = _extract_bibtex_field(body, "author")
-        year_value = _extract_bibtex_field(body, "year")
-        venue = _extract_bibtex_field(body, "journal") or _extract_bibtex_field(body, "booktitle")
+        fields = _bibtex_fields(body, macros)
         year = None
-        if year_value:
-            year_match = YEAR_RE.search(year_value)
+        if fields.get("year") or fields.get("date"):
+            year_match = re.search(r"(?<!\d)\d{4}(?!\d)", fields.get("year") or fields.get("date", ""))
             if year_match:
                 year = int(year_match.group(0))
         entries.append(
             ReferenceInfo(
-                raw_text=raw_text,
-                title=title,
-                doi=doi,
-                authors=_split_authors(author_value),
+                raw_text=f"@{entry_type}{{{block}}}",
+                title=fields.get("title"),
+                doi=fields.get("doi"),
+                authors=_split_authors(fields.get("author") or fields.get("editor")),
                 year=year,
-                venue=venue,
+                venue=fields.get("journal") or fields.get("journaltitle") or fields.get("booktitle"),
                 key=key.strip() or None,
+                entry_type=entry_type,
+                fields=fields,
             )
         )
     return BibliographyInfo(
@@ -494,7 +550,6 @@ def parse_bibliography(file_path: str) -> BibliographyInfo:
     if suffix == ".json":
         data = json.loads(text)
         return _parse_csl_json(source, data)
-    lines = text.splitlines()
     entries: list[ReferenceInfo] = []
     for raw_reference in _split_reference_entries(_extract_references_section(text)):
         entries.append(

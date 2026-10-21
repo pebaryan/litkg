@@ -1,0 +1,25 @@
+# Copy to .github/workflows/citations.yml in your paper's repository.
+name: Citations
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write  # only needed for the SARIF upload
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pebaryan/litkg@v0.2.0
+        with:
+          paper: main.tex
+          mailto: you@example.org
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: litkg.sarif

@@ -1,0 +1,8 @@
+- id: litkg-check
+  name: litkg citation check
+  description: Check that every citation in the paper is defined and well formed (offline).
+  entry: litkg check
+  language: python
+  pass_filenames: false
+  files: \.(tex|bib|bibtex|md|qmd|rmd|json)$
+  # Pass the main file in your config, e.g.  args: [paper/main.tex]
